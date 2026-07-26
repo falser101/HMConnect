@@ -3,7 +3,7 @@ import { notificationManager } from '@kit.NotificationKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 
 /**
- * Local system notifications (Ping etc.).
+ * Local system notifications (Ping, Find My Phone).
  * Requests notification enablement once; failures are logged, never thrown to callers.
  * Tap on a notification brings EntryAbility to the foreground via WantAgent.
  */
@@ -127,7 +127,6 @@ export class AppNotifier {
           text: body
         }
       },
-      // Dismiss after tap when wantAgent is present
       tapDismissed: true
     };
     if (agent) {
@@ -143,8 +142,9 @@ export class AppNotifier {
   }
 
   /**
-   * High-visibility banner when desktop rings this phone (Find My Phone).
-   * Tap opens the app so the user can confirm / stop the alert.
+   * Sticky find-my-phone banner with explicit「关闭响铃」action.
+   * Body tap opens the control page; button stops ringing.
+   * Uses a loud slot + optional notification sound as background fallback.
    */
   public async notifyFindMyPhone(peerName: string): Promise<void> {
     let ok = await this.ensureEnabled();
@@ -152,23 +152,41 @@ export class AppNotifier {
       console.warn('[Notify] notifications disabled; skip find-phone banner');
       return;
     }
+    // Prefer service slot (ongoing) so system keeps the banner while continuous task runs
+    try {
+      await notificationManager.addSlot(notificationManager.SlotType.SERVICE_INFORMATION);
+    } catch (_s) {
+      // already exists
+    }
     let name = peerName.length > 0 ? peerName : '电脑';
     let id = AppNotifier.FIND_PHONE_NOTIFY_ID;
-    let agent = await this.buildOpenAppAgent(id, 'findmyphone');
+    let openAgent = await this.buildOpenAppAgent(id, 'findmyphone');
+    let stopAgent = await this.buildOpenAppAgent(id + 1, 'stopfindmyphone');
+
     let request: notificationManager.NotificationRequest = {
       id: id,
-      notificationSlotType: notificationManager.SlotType.SOCIAL_COMMUNICATION,
+      notificationSlotType: notificationManager.SlotType.SERVICE_INFORMATION,
       content: {
         notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
         normal: {
-          title: '正在查找这台设备',
-          text: `${name} 发起了「找手机」· 点按打开应用`
+          title: '正在响铃 · 查找设备',
+          text: `${name} 在找你 · 后台持续响铃中，点「关闭响铃」停止`
         }
       },
-      tapDismissed: true
+      isOngoing: true,
+      isAlertOnce: false,
+      tapDismissed: false
     };
-    if (agent) {
-      request.wantAgent = agent;
+    if (openAgent) {
+      request.wantAgent = openAgent;
+    }
+    if (stopAgent) {
+      request.actionButtons = [
+        {
+          title: '关闭响铃',
+          wantAgent: stopAgent
+        }
+      ];
     }
     try {
       await notificationManager.publish(request);

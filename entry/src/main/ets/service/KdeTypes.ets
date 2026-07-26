@@ -8,6 +8,14 @@ export const KDE_MIN_TCP_PORT: number = 1716;
 export const KDE_MAX_TCP_PORT: number = 1764;
 export const KDE_PROTOCOL_VERSION: number = 7;
 
+/** Port range for temporary payload transfer sockets (Android: PAYLOAD_TRANSFER_MIN_PORT). */
+export const PAYLOAD_TRANSFER_MIN_PORT: number = 1739;
+export const PAYLOAD_TRANSFER_MAX_PORT: number = 1764;
+
+/** Protocol packet type constants. */
+export const PACKET_TYPE_SHARE_REQUEST: string = 'kdeconnect.share.request';
+export const PACKET_TYPE_SHARE_REQUEST_UPDATE: string = 'kdeconnect.share.request.update';
+
 /** Fixed MVP device id (must match CN of bundled TLS cert). */
 export const MY_DEVICE_ID: string = 'a1b2c3d4e5f6789012345678abcdef01';
 
@@ -18,7 +26,8 @@ export const INCOMING_CAPABILITIES: string[] = [
   'kdeconnect.pair',
   'kdeconnect.ping',
   'kdeconnect.battery',
-  'kdeconnect.findmyphone.request'
+  'kdeconnect.findmyphone.request',
+  'kdeconnect.share.request'
 ];
 
 /** Packets this device can send. */
@@ -27,7 +36,8 @@ export const OUTGOING_CAPABILITIES: string[] = [
   'kdeconnect.clipboard.connect',
   'kdeconnect.pair',
   'kdeconnect.ping',
-  'kdeconnect.battery'
+  'kdeconnect.battery',
+  'kdeconnect.share.request'
 ];
 
 /** @deprecated use INCOMING/OUTGOING; kept for any leftover imports. */
@@ -97,6 +107,28 @@ export interface KdePingBody {
   message?: string;
 }
 
+/** kdeconnect.share.request body — matches Android SharePlugin. */
+export interface KdeShareRequestBody {
+  filename?: string;
+  numberOfFiles: number;
+  totalPayloadSize: number;
+  lastModified?: number;
+  open?: boolean;
+}
+
+/** Per-file info used by FileSendJob before constructing packets. */
+export interface FileSendInfo {
+  uri: string;
+  displayName: string;
+  size: number;
+  lastModified: number;
+}
+
+/** Payload transfer metadata sent in the JSON packet (Android: payloadTransferInfo). */
+export interface PayloadTransferInfo {
+  port: number;
+}
+
 /** kdeconnect.battery body (phone ↔ desktop). */
 export interface KdeBatteryBody {
   currentCharge: number;
@@ -150,6 +182,35 @@ export function serializePacket<T>(type: string, body: T): string {
     body: body
   };
   return JSON.stringify(packet) + '\n';
+}
+
+/**
+ * Serialise a packet that carries a binary payload via side-channel.
+ * Aligns with Android NetworkPacket.serialize() when payload is present.
+ */
+export function serializePacketWithPayload<T extends object>(
+  type: string,
+  body: T,
+  payloadSize: number,
+  payloadTransferInfo: PayloadTransferInfo
+): string {
+  // Use an explicit interface to satisfy ArkTS strict mode
+  let obj: KdePacketWithPayload<T> = {
+    id: makePacketId(),
+    type: type,
+    body: body,
+    payloadSize: payloadSize,
+    payloadTransferInfo: payloadTransferInfo
+  };
+  return JSON.stringify(obj) + '\n';
+}
+
+interface KdePacketWithPayload<T extends object> {
+  id: number;
+  type: string;
+  body: T;
+  payloadSize: number;
+  payloadTransferInfo: PayloadTransferInfo;
 }
 
 export function parsePacketLine(line: string): KdePacket<object> | null {

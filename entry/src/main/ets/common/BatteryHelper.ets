@@ -40,8 +40,14 @@ export class BatteryHelper {
     };
   }
 
+  /** Align with Android battery_status_*_format strings. */
   public static formatLabel(charge: number, isCharging: boolean): string {
-    let suffix = isCharging ? ' · 充电中' : '';
-    return `电量 ${charge}%${suffix}`;
+    if (isCharging) {
+      return `电量：${charge}% 正在充电`;
+    }
+    if (charge <= LOW_BATTERY_PERCENT) {
+      return `电量：${charge}% 电量低`;
+    }
+    return `电量：${charge}%`;
   }
 }

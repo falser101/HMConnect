@@ -1,6 +1,8 @@
 import { common } from '@kit.AbilityKit';
+import { UIContext, router } from '@kit.ArkUI';
 import { KdeService } from '../service/KdeService';
 import { DeviceListItem, KdeStatus } from '../service/KdeTypes';
+import { FindMyPhoneHelper } from '../common/FindMyPhoneHelper';
 
 /**
  * Process-wide session: protocol stack lives here, not in pages.
@@ -11,6 +13,10 @@ export class AppSession {
   private service: KdeService = new KdeService();
   private started: boolean = false;
   private context: common.UIAbilityContext | null = null;
+  /** Latest UIContext from a visible page — used to open FindMyPhone. */
+  private uiContext: UIContext | null = null;
+  private findPhonePageOpen: boolean = false;
+  private findPhoneNavSubId: number = -1;
 
   private deviceListeners: Map<number, (items: DeviceListItem[]) => void> = new Map();
   private statusListeners: Map<number, (status: KdeStatus) => void> = new Map();
@@ -35,6 +41,7 @@ export class AppSession {
 
   public async ensureStarted(context: common.UIAbilityContext): Promise<void> {
     this.context = context;
+    FindMyPhoneHelper.getInstance().setContext(context);
     if (this.started) {
       return;
     }
@@ -50,6 +57,57 @@ export class AppSession {
       });
     });
     this.started = true;
+    this.wireFindPhoneNavigation();
+  }
+
+  /** Call from page aboutToAppear / onPageShow so we can open full-screen find UI. */
+  public attachUiContext(ui: UIContext): void {
+    this.uiContext = ui;
+    // If already ringing when page becomes visible, open the control screen
+    if (FindMyPhoneHelper.getInstance().isActive()) {
+      this.openFindPhonePage();
+    }
+  }
+
+  public markFindPhonePageOpen(open: boolean): void {
+    this.findPhonePageOpen = open;
+  }
+
+  private wireFindPhoneNavigation(): void {
+    if (this.findPhoneNavSubId >= 0) {
+      return;
+    }
+    this.findPhoneNavSubId = FindMyPhoneHelper.getInstance().subscribe((active: boolean, _name: string) => {
+      if (active) {
+        this.openFindPhonePage();
+      } else {
+        this.findPhonePageOpen = false;
+      }
+    });
+  }
+
+  public openFindPhonePage(): void {
+    if (this.findPhonePageOpen) {
+      return;
+    }
+    if (!this.uiContext) {
+      console.warn('[AppSession] no UIContext yet; find-phone page deferred');
+      return;
+    }
+    try {
+      let options: router.RouterOptions = {
+        url: 'pages/FindMyPhone',
+        params: {}
+      };
+      this.findPhonePageOpen = true;
+      this.uiContext.getRouter().pushUrl(options).catch((e: Error) => {
+        this.findPhonePageOpen = false;
+        console.error('[AppSession] open FindMyPhone failed:', e.message);
+      });
+    } catch (e) {
+      this.findPhonePageOpen = false;
+      console.error('[AppSession] open FindMyPhone exception:', JSON.stringify(e));
+    }
   }
 
   public subscribeDevices(cb: (items: DeviceListItem[]) => void): number {
@@ -84,6 +142,11 @@ export class AppSession {
 
   /** Only call from Ability onDestroy. */
   public shutdown(): void {
+    if (this.findPhoneNavSubId >= 0) {
+      FindMyPhoneHelper.getInstance().unsubscribe(this.findPhoneNavSubId);
+      this.findPhoneNavSubId = -1;
+    }
+    FindMyPhoneHelper.getInstance().stop();
     this.service.stop();
     this.started = false;
     this.deviceListeners.clear();

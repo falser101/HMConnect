@@ -1,41 +1,58 @@
 import { common } from '@kit.AbilityKit';
 import { AppSession } from '../app/AppSession';
-import { DeviceListItem, KdeStatus, ConnectionState } from '../service/KdeTypes';
-import { BatteryHelper } from '../common/BatteryHelper';
+import { DeviceListItem, KdeStatus } from '../service/KdeTypes';
+import { FindMyPhoneHelper } from '../common/FindMyPhoneHelper';
 import { DeviceDetailRouteParams, hostContext, pushPage } from '../common/NavUtil';
+import { UiTheme } from '../common/ui/UiTheme';
+import { KdeIcon, KdeIconRes } from '../common/ui/KdeIcons';
+import {
+  KdeTopBar,
+  KdeSectionHeader,
+  KdeDeviceCard,
+  KdeEmptyText,
+  KdeNavRow
+} from '../common/ui/KdeWidgets';
 
 @Entry
 @Component
 struct Index {
-  @State pairedList: DeviceListItem[] = [];
+  @StorageProp('statusBarHeight') statusBarHeight: number = 0;
+  @StorageProp('navBarHeight') navBarHeight: number = 0;
+  @State connectedList: DeviceListItem[] = [];
   @State availableList: DeviceListItem[] = [];
-  @State statusText: string = '初始化中…';
-  @State statusState: ConnectionState = 'idle';
+  @State rememberedList: DeviceListItem[] = [];
+  @State statusText: string = '';
   @State myName: string = '';
-  @State myIdShort: string = '';
   @State sidebarOpen: boolean = false;
+  /** Drawer panel X offset in vp; 0 = open, negative = off-screen left. */
+  @State drawerPx: number = -320;
+  @State scrimOpacity: number = 0;
+  @State findPhoneRinging: boolean = false;
+  @State findPhonePeer: string = '';
+  @State refreshing: boolean = false;
+  @State isRefreshingPull: boolean = false;
 
   private deviceSubId: number = -1;
   private statusSubId: number = -1;
+  private findPhoneSubId: number = -1;
   private session: AppSession = AppSession.getInstance();
+  private refreshTimer: number = -1;
 
   aboutToAppear() {
+    this.session.attachUiContext(this.getUIContext());
     let ctx: common.UIAbilityContext | undefined = hostContext(this.getUIContext());
     if (ctx) {
       this.session.ensureStarted(ctx).then(() => {
         this.myName = this.session.getService().getMyName();
-        let id = this.session.getService().getMyDeviceId();
-        this.myIdShort = id.length > 12 ? id.substring(0, 12) + '…' : id;
         this.applyDevices(this.session.getLastDevices());
         this.applyStatus(this.session.getLastStatus());
       });
     }
-
     this.ensureSubscriptions();
   }
 
   onPageShow() {
-    // Router may keep Index alive under the detail page; re-sync when visible again.
+    this.session.attachUiContext(this.getUIContext());
     this.ensureSubscriptions();
     this.applyDevices(this.session.getLastDevices());
     this.applyStatus(this.session.getLastStatus());
@@ -43,6 +60,10 @@ struct Index {
 
   aboutToDisappear() {
     this.clearSubscriptions();
+    if (this.refreshTimer >= 0) {
+      clearTimeout(this.refreshTimer);
+      this.refreshTimer = -1;
+    }
   }
 
   private ensureSubscriptions(): void {
@@ -56,6 +77,12 @@ struct Index {
         this.applyStatus(status);
       });
     }
+    if (this.findPhoneSubId < 0) {
+      this.findPhoneSubId = FindMyPhoneHelper.getInstance().subscribe((active: boolean, name: string) => {
+        this.findPhoneRinging = active;
+        this.findPhonePeer = name;
+      });
+    }
   }
 
   private clearSubscriptions(): void {
@@ -67,263 +94,429 @@ struct Index {
       this.session.unsubscribeStatus(this.statusSubId);
       this.statusSubId = -1;
     }
+    if (this.findPhoneSubId >= 0) {
+      FindMyPhoneHelper.getInstance().unsubscribe(this.findPhoneSubId);
+      this.findPhoneSubId = -1;
+    }
   }
 
+  /**
+   * Android PairingViewModel buckets (relaxed so session/paired devices always surface):
+   * - connected: trusted + (online | sessionActive | connected/paired status)
+   * - available: !trusted + online
+   * - remembered: trusted + offline
+   */
   private applyDevices(items: DeviceListItem[]): void {
-    let paired: DeviceListItem[] = [];
+    let connected: DeviceListItem[] = [];
     let available: DeviceListItem[] = [];
+    let remembered: DeviceListItem[] = [];
     for (let i = 0; i < items.length; i++) {
-      if (items[i].trusted) {
-        paired.push(items[i]);
-      } else {
-        available.push(items[i]);
+      let item = items[i];
+      let reachable = item.online || item.sessionActive ||
+        item.status === 'connected' || item.status === 'paired' || item.status === 'connecting';
+      if (item.trusted && reachable) {
+        connected.push(item);
+      } else if (!item.trusted && (item.online || item.sessionActive || item.status === 'connecting')) {
+        available.push(item);
+      } else if (item.trusted) {
+        remembered.push(item);
+      } else if (item.online) {
+        available.push(item);
       }
     }
-    this.pairedList = paired;
+    this.connectedList = connected;
     this.availableList = available;
+    this.rememberedList = remembered;
   }
 
   private applyStatus(status: KdeStatus): void {
-    this.statusState = status.state;
-    this.statusText = status.message;
-  }
-
-  private statusColor(): string {
-    if (this.statusState === 'paired') {
-      return '#1B8A4A';
+    if (status.state === 'error') {
+      this.statusText = status.message;
+    } else {
+      this.statusText = '';
     }
-    if (this.statusState === 'connected' || this.statusState === 'tls_handshake' ||
-      this.statusState === 'connecting') {
-      return '#1565C0';
-    }
-    if (this.statusState === 'error') {
-      return '#C62828';
-    }
-    return '#666666';
   }
 
   private openDevice(item: DeviceListItem): void {
+    this.closeDrawer();
     let params: DeviceDetailRouteParams = { deviceId: item.deviceId };
     pushPage(this.getUIContext(), 'pages/DeviceDetail', params);
   }
 
-  private statusDotColor(item: DeviceListItem): string {
-    if (item.status === 'paired') {
-      return '#1B8A4A';
+  private openDeviceById(deviceId: string): void {
+    let params: DeviceDetailRouteParams = { deviceId: deviceId };
+    this.closeDrawer();
+    pushPage(this.getUIContext(), 'pages/DeviceDetail', params);
+  }
+
+  /** Card subtitle: prefer statusLabel; offline error in red via KdeDeviceCard. */
+  private deviceSummary(item: DeviceListItem): string {
+    if (!item.online && item.trusted && !item.sessionActive) {
+      return '设备不可及';
     }
-    if (item.status === 'connected' || item.status === 'connecting') {
-      return '#1565C0';
+    if (item.statusLabel.length > 0) {
+      return item.statusLabel;
     }
-    if (item.online || item.status === 'available') {
-      return '#1565C0';
+    if (item.status === 'connecting') {
+      return '连接中…';
     }
-    return '#BDBDBD';
+    return '';
+  }
+
+  private doRefresh(): void {
+    this.refreshing = true;
+    this.isRefreshingPull = true;
+    this.session.getService().forceRefresh();
+    // Re-pull list immediately after force refresh
+    this.applyDevices(this.session.getService().buildDeviceList());
+    if (this.refreshTimer >= 0) {
+      clearTimeout(this.refreshTimer);
+    }
+    this.refreshTimer = setTimeout(() => {
+      this.refreshing = false;
+      this.isRefreshingPull = false;
+      this.refreshTimer = -1;
+      this.applyDevices(this.session.getService().buildDeviceList());
+    }, UiTheme.durationRefresh) as number;
+  }
+
+  private openDrawer(): void {
+    this.sidebarOpen = true;
+    this.drawerPx = -320;
+    this.scrimOpacity = 0;
+    this.getUIContext().animateTo({
+      duration: UiTheme.durationDrawer,
+      curve: Curve.EaseOut
+    }, () => {
+      this.drawerPx = 0;
+      this.scrimOpacity = 1;
+    });
+  }
+
+  private closeDrawer(): void {
+    this.getUIContext().animateTo({
+      duration: UiTheme.durationDrawer,
+      curve: Curve.EaseIn,
+      onFinish: () => {
+        this.sidebarOpen = false;
+      }
+    }, () => {
+      this.drawerPx = -320;
+      this.scrimOpacity = 0;
+    });
   }
 
   @Builder
-  DeviceRow(item: DeviceListItem) {
-    Row() {
-      Column()
-        .width(10)
-        .height(10)
-        .borderRadius(5)
-        .backgroundColor(this.statusDotColor(item))
-        .margin({ right: 12 })
-
-      Column() {
-        Text(item.deviceName)
-          .fontSize(17)
-          .fontWeight(FontWeight.Medium)
-          .fontColor('#212121')
-        Text(`${item.statusLabel}${item.ip.length > 0 ? ' · ' + item.ip : ''}`)
-          .fontSize(12)
-          .fontColor('#757575')
-          .margin({ top: 4 })
-        if (item.peerBattery) {
-          Text(BatteryHelper.formatLabel(
-            item.peerBattery.currentCharge,
-            item.peerBattery.isCharging
-          ))
-            .fontSize(12)
-            .fontColor(item.peerBattery.currentCharge <= 15 && !item.peerBattery.isCharging
-              ? '#C62828' : '#1565C0')
-            .margin({ top: 2 })
+  DrawerContent() {
+    Column() {
+      // nav_header
+      Row() {
+        Column() {
+          KdeIcon({
+            symbol: KdeIconRes.phone(),
+            iconSize: 28,
+            color: UiTheme.iconTint
+          })
         }
+        .width(48)
+        .height(48)
+        .justifyContent(FlexAlign.Center)
+        .backgroundColor(UiTheme.surfaceVariant)
+        .borderRadius(24)
+
+        Column() {
+          Text('HMConnect')
+            .fontSize(18)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(UiTheme.onSurface)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text(this.myName.length > 0 ? this.myName : '本机设备')
+            .fontSize(13)
+            .fontColor(UiTheme.onSurfaceVariant)
+            .margin({ top: 4 })
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+        .alignItems(HorizontalAlign.Start)
+        .margin({ left: 12 })
+        .layoutWeight(1)
+        .constraintSize({ minWidth: 0 })
       }
+      .width('100%')
+      .padding({ left: 16, right: 16, top: 48, bottom: 16 })
+      .alignItems(VerticalAlign.Center)
+
+      Divider().color(UiTheme.divider)
+
+      // Menu area with horizontal padding so selected pill stays inside
+      Column() {
+        Text('设备')
+          .fontSize(12)
+          .fontColor(UiTheme.textMuted)
+          .width('100%')
+          .padding({ left: 16, right: 8, top: 12, bottom: 4 })
+
+        ForEach(this.connectedList, (item: DeviceListItem) => {
+          KdeNavRow({
+            label: item.deviceName,
+            symbol: KdeIconRes.forDeviceType(item.deviceType),
+            selected: false,
+            onTap: () => {
+              this.openDeviceById(item.deviceId);
+            }
+          })
+        }, (item: DeviceListItem) => `nav_${item.deviceId}`)
+
+        KdeNavRow({
+          label: '配对新设备',
+          symbol: KdeIconRes.addCircle(),
+          selected: true,
+          onTap: () => {
+            this.closeDrawer();
+          }
+        })
+
+        Divider().color(UiTheme.divider).margin({ top: 8, bottom: 8 })
+
+        KdeNavRow({
+          label: '设置',
+          symbol: KdeIconRes.settings(),
+          selected: false,
+          onTap: () => {
+            this.closeDrawer();
+            pushPage(this.getUIContext(), 'pages/Settings');
+          }
+        })
+
+        KdeNavRow({
+          label: '关于',
+          symbol: KdeIconRes.info(),
+          selected: false,
+          onTap: () => {
+            this.closeDrawer();
+            pushPage(this.getUIContext(), 'pages/About');
+          }
+        })
+      }
+      .width('100%')
+      .padding({ left: 8, right: 8 })
       .alignItems(HorizontalAlign.Start)
       .layoutWeight(1)
+      .clip(true)
 
-      Text('›')
-        .fontSize(22)
-        .fontColor('#BDBDBD')
+      Blank()
     }
     .width('100%')
-    .padding({ left: 16, right: 16, top: 14, bottom: 14 })
-    .backgroundColor(Color.White)
-    .onClick(() => {
-      this.openDevice(item);
-    })
-  }
-
-  @Builder
-  SectionHeader(title: string, count: number) {
-    Text(`${title} (${count})`)
-      .fontSize(13)
-      .fontColor('#757575')
-      .fontWeight(FontWeight.Medium)
-      .width('100%')
-      .padding({ left: 16, right: 16, top: 16, bottom: 8 })
+    .height('100%')
+    .backgroundColor(UiTheme.sidebarBg)
+    .alignItems(HorizontalAlign.Start)
+    .clip(true)
   }
 
   build() {
     Stack() {
       Column() {
-        Row() {
-          Text('☰')
-            .fontSize(22)
-            .fontColor('#212121')
-            .padding(8)
+        // Status-bar spacer — same color as toolbar so chrome is continuous
+        Column()
+          .width('100%')
+          .height(this.statusBarHeight)
+          .backgroundColor(UiTheme.surface)
+
+        KdeTopBar({
+          title: '设备',
+          showMenu: true,
+          showRefresh: true,
+          refreshing: this.refreshing,
+          onMenu: () => {
+            this.openDrawer();
+          },
+          onRefresh: () => {
+            this.doRefresh();
+          }
+        })
+
+        if (this.findPhoneRinging) {
+          Row() {
+            Column() {
+              Text('正在响铃 · 查找设备')
+                .fontSize(14)
+                .fontWeight(FontWeight.Medium)
+                .fontColor(Color.White)
+              Text(this.findPhonePeer.length > 0 ? this.findPhonePeer : '电脑端')
+                .fontSize(12)
+                .fontColor('#FFCDD2')
+                .margin({ top: 2 })
+            }
+            .alignItems(HorizontalAlign.Start)
+            .layoutWeight(1)
             .onClick(() => {
-              this.sidebarOpen = true;
+              this.session.openFindPhonePage();
             })
 
-          Text('设备')
-            .fontSize(20)
-            .fontWeight(FontWeight.Bold)
-            .fontColor('#212121')
-            .margin({ left: 8 })
-            .layoutWeight(1)
-        }
-        .width('100%')
-        .height(56)
-        .padding({ left: 8, right: 16 })
-        .alignItems(VerticalAlign.Center)
-
-        Text(this.statusText)
-          .fontSize(12)
-          .fontColor(this.statusColor())
-          .width('100%')
-          .padding({ left: 16, right: 16, bottom: 8 })
-          .maxLines(2)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-
-        if (this.pairedList.length === 0 && this.availableList.length === 0) {
-          Column() {
-            Text('正在搜索设备…')
-              .fontSize(16)
-              .fontColor('#9E9E9E')
-            Text('请确认电脑已打开 KDE Connect\n并与手机在同一 Wi‑Fi')
-              .fontSize(13)
-              .fontColor('#BDBDBD')
-              .textAlign(TextAlign.Center)
-              .margin({ top: 12 })
+            Button('关闭响铃')
+              .height(36)
+              .fontSize(14)
+              .fontColor(UiTheme.findPhoneDark)
+              .backgroundColor(Color.White)
+              .borderRadius(18)
+              .onClick(() => {
+                FindMyPhoneHelper.getInstance().stop();
+              })
           }
           .width('100%')
-          .layoutWeight(1)
-          .justifyContent(FlexAlign.Center)
-        } else {
+          .padding({ left: 16, right: 16, top: 10, bottom: 10 })
+          .backgroundColor(UiTheme.findPhone)
+        }
+
+        if (this.statusText.length > 0) {
+          Text(this.statusText)
+            .fontSize(13)
+            .fontColor(UiTheme.danger)
+            .width('100%')
+            .padding({ left: 16, right: 16, top: 6, bottom: 2 })
+            .maxLines(2)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+
+        // Inline List sections (avoid @Builder+ForEach ListItem refresh bugs)
+        Refresh({ refreshing: this.isRefreshingPull }) {
           List() {
-            if (this.pairedList.length > 0) {
-              ListItem() {
-                this.SectionHeader('已配对', this.pairedList.length)
+            ListItem({ style: ListItemStyle.NONE }) {
+              Row() {
+                KdeIcon({
+                  symbol: KdeIconRes.wifi(),
+                  iconSize: 18,
+                  color: UiTheme.onSurfaceVariant
+                })
+                Text('其他在同一网络运行 KDE Connect 的设备会在此处显示。')
+                  .fontSize(UiTheme.bodyMd)
+                  .fontColor(UiTheme.onSurfaceVariant)
+                  .margin({ left: 8 })
+                  .layoutWeight(1)
               }
-              ForEach(this.pairedList, (item: DeviceListItem) => {
-                ListItem() {
-                  this.DeviceRow(item)
-                }
-                .margin({ bottom: 1 })
-              }, (item: DeviceListItem) =>
-                `p_${item.deviceId}_${item.status}_${item.sessionActive ? '1' : '0'}_${item.ip}_${item.peerBattery?.currentCharge ?? -1}_${item.peerBattery?.isCharging ? 1 : 0}`)
+              .width('100%')
+              .padding({ left: 16, right: 16, top: 14, bottom: 6 })
+              .alignItems(VerticalAlign.Top)
             }
 
-            if (this.availableList.length > 0) {
-              ListItem() {
-                this.SectionHeader('可用设备', this.availableList.length)
+            // —— 已连接的设备 ——
+            ListItem({ style: ListItemStyle.NONE }) {
+              KdeSectionHeader({ title: '已连接的设备' })
+            }
+
+            if (this.connectedList.length === 0) {
+              ListItem({ style: ListItemStyle.NONE }) {
+                KdeEmptyText({ text: '无设备' })
               }
+            }
+            ForEach(this.connectedList, (item: DeviceListItem) => {
+              ListItem({ style: ListItemStyle.NONE }) {
+                KdeDeviceCard({
+                  name: item.deviceName,
+                  deviceType: item.deviceType,
+                  summary: this.deviceSummary(item),
+                  deviceId: item.deviceId,
+                  onOpen: () => {
+                    this.openDeviceById(item.deviceId);
+                  }
+                })
+              }
+            }, (item: DeviceListItem) =>
+              `c_${item.deviceId}_${item.status}_${item.online ? 1 : 0}_${item.sessionActive ? 1 : 0}_${item.statusLabel}`)
+
+            // —— 可用的设备 ——
+            if (this.availableList.length > 0) {
+              ListItem({ style: ListItemStyle.NONE }) {
+                KdeSectionHeader({ title: '可用的设备' })
+              }
+
               ForEach(this.availableList, (item: DeviceListItem) => {
-                ListItem() {
-                  this.DeviceRow(item)
+                ListItem({ style: ListItemStyle.NONE }) {
+                  KdeDeviceCard({
+                    name: item.deviceName,
+                    deviceType: item.deviceType,
+                    summary: this.deviceSummary(item),
+                    deviceId: item.deviceId,
+                    onOpen: () => {
+                      this.openDeviceById(item.deviceId);
+                    }
+                  })
                 }
-                .margin({ bottom: 1 })
               }, (item: DeviceListItem) =>
-                `a_${item.deviceId}_${item.status}_${item.sessionActive ? '1' : '0'}_${item.ip}_${item.peerBattery?.currentCharge ?? -1}_${item.peerBattery?.isCharging ? 1 : 0}`)
+                `a_${item.deviceId}_${item.status}_${item.online ? 1 : 0}_${item.sessionActive ? 1 : 0}`)
+            }
+
+            // —— 记住的设备 ——
+            if (this.rememberedList.length > 0) {
+              ListItem({ style: ListItemStyle.NONE }) {
+                KdeSectionHeader({ title: '记住的设备' })
+              }
+
+              ForEach(this.rememberedList, (item: DeviceListItem) => {
+                ListItem({ style: ListItemStyle.NONE }) {
+                  KdeDeviceCard({
+                    name: item.deviceName,
+                    deviceType: item.deviceType,
+                    summary: this.deviceSummary(item),
+                    deviceId: item.deviceId,
+                    onOpen: () => {
+                      this.openDeviceById(item.deviceId);
+                    }
+                  })
+                }
+              }, (item: DeviceListItem) =>
+                `r_${item.deviceId}_${item.status}_${item.online ? 1 : 0}`)
+            }
+
+            ListItem({ style: ListItemStyle.NONE }) {
+              Column().width('100%').height(this.navBarHeight + 24)
             }
           }
           .width('100%')
-          .layoutWeight(1)
-          .backgroundColor('#F5F5F5')
+          .height('100%')
+          .padding({ left: UiTheme.pageHPad, right: UiTheme.pageHPad })
+          .scrollBar(BarState.Off)
+          .edgeEffect(EdgeEffect.Spring)
         }
+        .onRefreshing(() => {
+          this.doRefresh();
+        })
+        .layoutWeight(1)
+        .backgroundColor(UiTheme.pageBg)
       }
       .width('100%')
       .height('100%')
-      .backgroundColor('#FAFAFA')
+      .backgroundColor(UiTheme.pageBg)
+      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
 
       if (this.sidebarOpen) {
-        Row() {
+        Stack() {
+          Column()
+            .width('100%')
+            .height('100%')
+            .backgroundColor(UiTheme.scrim)
+            .opacity(this.scrimOpacity)
+            .hitTestBehavior(HitTestMode.Default)
+            .onClick(() => {
+              this.closeDrawer();
+            })
+
           Column() {
-            Text('HMConnect')
-              .fontSize(22)
-              .fontWeight(FontWeight.Bold)
-              .margin({ top: 48, left: 20, bottom: 4 })
-              .width('100%')
-              .textAlign(TextAlign.Start)
-
-            Text('本机设备')
-              .fontSize(12)
-              .fontColor('#9E9E9E')
-              .margin({ left: 20, top: 16 })
-              .width('100%')
-
-            Text(this.myName.length > 0 ? this.myName : '…')
-              .fontSize(16)
-              .fontWeight(FontWeight.Medium)
-              .margin({ left: 20, top: 4 })
-              .width('100%')
-
-            Text(`ID: ${this.myIdShort}`)
-              .fontSize(12)
-              .fontColor('#9E9E9E')
-              .margin({ left: 20, top: 4, bottom: 20 })
-              .width('100%')
-
-            Divider().color('#E0E0E0')
-
-            Text('设置')
-              .fontSize(16)
-              .width('100%')
-              .padding({ left: 20, right: 20, top: 16, bottom: 16 })
-              .onClick(() => {
-                this.sidebarOpen = false;
-                pushPage(this.getUIContext(), 'pages/Settings');
-              })
-
-            Text('关于')
-              .fontSize(16)
-              .width('100%')
-              .padding({ left: 20, right: 20, top: 16, bottom: 16 })
-              .onClick(() => {
-                this.sidebarOpen = false;
-                pushPage(this.getUIContext(), 'pages/About');
-              })
-
-            Blank()
+            this.DrawerContent()
           }
           .width('78%')
+          .constraintSize({ maxWidth: 320 })
           .height('100%')
-          .backgroundColor(Color.White)
-          .alignItems(HorizontalAlign.Start)
-          .shadow({ radius: 16, color: '#40000000', offsetX: 2, offsetY: 0 })
-
-          Column()
-            .width('22%')
-            .height('100%')
-            .backgroundColor('#66000000')
-            .onClick(() => {
-              this.sidebarOpen = false;
-            })
+          .shadow({ radius: 16, color: '#40000000', offsetX: 4, offsetY: 0 })
+          .offset({ x: this.drawerPx })
+          .clip(true)
+          .align(Alignment.Start)
         }
         .width('100%')
         .height('100%')
+        .alignContent(Alignment.Start)
+        .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
       }
     }
     .width('100%')

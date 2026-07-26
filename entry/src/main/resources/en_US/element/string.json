@@ -1,0 +1,248 @@
+{
+  "string": [
+    {
+      "name": "settings_device_name",
+      "value": "Device name"
+    },
+    {
+      "name": "settings_choose_theme",
+      "value": "Choose theme"
+    },
+    {
+      "name": "settings_theme_summary",
+      "value": "System default"
+    },
+    {
+      "name": "settings_persistent_notification",
+      "value": "Persistent notification"
+    },
+    {
+      "name": "settings_persistent_notification_summary",
+      "value": "Tap to enable/disable in Notification settings"
+    },
+    {
+      "name": "settings_trusted_networks",
+      "value": "Trusted networks"
+    },
+    {
+      "name": "settings_trusted_networks_summary",
+      "value": "Restrict autodiscovery to known networks"
+    },
+    {
+      "name": "settings_add_devices_by_ip",
+      "value": "Add devices by IP"
+    },
+    {
+      "name": "settings_add_devices_by_ip_summary",
+      "value": "Custom device list"
+    },
+    {
+      "name": "settings_enable_bluetooth",
+      "value": "Enable bluetooth (beta)"
+    },
+    {
+      "name": "settings_export_logs",
+      "value": "Export KDE Connect logs"
+    },
+    {
+      "name": "settings_export_logs_summary",
+      "value": "Generate a file with execution information that can help troubleshoot issues."
+    },
+    {
+      "name": "settings_more_settings",
+      "value": "More settings"
+    },
+    {
+      "name": "settings_more_settings_summary",
+      "value": "Per-device settings can be found under 'Plugin settings' from within a device."
+    },
+    {
+      "name": "settings_clear_pairs",
+      "value": "Clear all paired records"
+    },
+    {
+      "name": "settings_clear_pairs_summary",
+      "value": "Delete all trusted device records and disconnect."
+    },
+    {
+      "name": "settings_clear_confirm_title",
+      "value": "Clear all paired records?"
+    },
+    {
+      "name": "settings_clear_confirm_body",
+      "value": "This cannot be undone."
+    },
+    {
+      "name": "settings_cancel",
+      "value": "Cancel"
+    },
+    {
+      "name": "settings_clear",
+      "value": "Clear"
+    },
+    {
+      "name": "settings_coming_soon",
+      "value": "Coming soon"
+    },
+    {
+      "name": "settings_cleared_toast",
+      "value": "Paired device records cleared."
+    },
+    {
+      "name": "device_detail_title",
+      "value": "Device"
+    },
+    {
+      "name": "device_not_found",
+      "value": "Device not found"
+    },
+    {
+      "name": "battery_unknown",
+      "value": "Battery: —"
+    },
+    {
+      "name": "toast_ping_sent",
+      "value": "Ping sent"
+    },
+    {
+      "name": "plugin_send_files",
+      "value": "Send files"
+    },
+    {
+      "name": "plugin_multimedia_control",
+      "value": "Multimedia control"
+    },
+    {
+      "name": "plugin_remote_input",
+      "value": "Remote input"
+    },
+    {
+      "name": "plugin_run_command",
+      "value": "Run Command"
+    },
+    {
+      "name": "plugin_presentation_remote",
+      "value": "Presentation remote"
+    },
+    {
+      "name": "plugin_drawing_tablet",
+      "value": "Use as drawing tablet"
+    },
+    {
+      "name": "plugin_send_clipboard",
+      "value": "Send clipboard"
+    },
+    {
+      "name": "menu_send_ping",
+      "value": "Send ping"
+    },
+    {
+      "name": "menu_ring",
+      "value": "Ring"
+    },
+    {
+      "name": "menu_plugin_settings",
+      "value": "Plugin settings"
+    },
+    {
+      "name": "menu_encryption_info",
+      "value": "Encryption Info"
+    },
+    {
+      "name": "menu_unpair",
+      "value": "Unpair"
+    },
+    {
+      "name": "pairing_not_paired_title",
+      "value": "Device not paired"
+    },
+    {
+      "name": "pairing_explanation",
+      "value": "Pairing two devices will give them access to each other. Only pair together your own devices."
+    },
+    {
+      "name": "pairing_connecting",
+      "value": "Connecting…"
+    },
+    {
+      "name": "pairing_request_button",
+      "value": "Request pairing"
+    },
+    {
+      "name": "pairing_accept",
+      "value": "Accept"
+    },
+    {
+      "name": "pairing_reject",
+      "value": "Reject"
+    },
+    {
+      "name": "unreachable_message",
+      "value": "This paired device is not reachable. Make sure it is connected to your same network."
+    },
+    {
+      "name": "unreachable_refresh",
+      "value": "Refresh"
+    },
+    {
+      "name": "plugins_permission_needed",
+      "value": "Some Plugins need permissions to work (tap for more info):"
+    },
+    {
+      "name": "plugins_permission_disabled",
+      "value": "Some plugins have features disabled because of lack of permission (tap for more info):"
+    },
+    {
+      "name": "plugins_connect_button",
+      "value": "Connect"
+    },
+    {
+      "name": "encryption_my_fingerprint_label",
+      "value": "SHA256 fingerprint of your device certificate is:"
+    },
+    {
+      "name": "encryption_cert_unavailable",
+      "value": "— (certificate not available)"
+    },
+    {
+      "name": "encryption_remote_fingerprint_label",
+      "value": "SHA256 fingerprint of remote device certificate is:"
+    },
+    {
+      "name": "encryption_not_connected",
+      "value": "— (not connected)"
+    },
+    {
+      "name": "encryption_protocol_version_label",
+      "value": "Protocol version:"
+    },
+    {
+      "name": "encryption_ok",
+      "value": "OK"
+    },
+    {
+      "name": "clipboard_dialog_title",
+      "value": "Send clipboard"
+    },
+    {
+      "name": "clipboard_input_hint",
+      "value": "Type or paste text..."
+    },
+    {
+      "name": "clipboard_send_button",
+      "value": "Send"
+    },
+    {
+      "name": "clipboard_send_toast",
+      "value": "Clipboard sent"
+    },
+    {
+      "name": "file_send_done",
+      "value": "Sent successfully"
+    },
+    {
+      "name": "file_send_failed",
+      "value": "Send failed"
+    }
+  ]
+}

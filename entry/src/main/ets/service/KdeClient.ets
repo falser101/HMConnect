@@ -1,6 +1,7 @@
 import socket from '@ohos.net.socket';
 import deviceInfo from '@ohos.deviceInfo';
 import pasteboard from '@ohos.pasteboard';
+import { fileIo } from '@kit.CoreFileKit';
 import { common } from '@kit.AbilityKit';
 import {
   KdeDevice,
@@ -9,6 +10,8 @@ import {
   KdeClipboardBody,
   KdePingBody,
   KdeBatteryBody,
+  KdeShareRequestBody,
+  PayloadTransferInfo,
   PeerBatteryInfo,
   KdeStatus,
   ConnectionState,
@@ -17,8 +20,12 @@ import {
   MY_DEVICE_ID,
   INCOMING_CAPABILITIES,
   OUTGOING_CAPABILITIES,
+  PAYLOAD_TRANSFER_MIN_PORT,
+  PAYLOAD_TRANSFER_MAX_PORT,
+  PACKET_TYPE_SHARE_REQUEST,
   sanitizeDeviceName,
   serializePacket,
+  serializePacketWithPayload,
   parsePacketLine
 } from './KdeTypes';
 import { DeviceStore } from '../store/DeviceStore';
@@ -1017,6 +1024,182 @@ export class KdeClient {
 
   public isDeviceSessionActive(deviceId: string): boolean {
     return this.sessionLive && this.peerDevice?.deviceId === deviceId;
+  }
+
+  // ── File transfer (dual-channel: JSON on main TLS, raw bytes on temp TCP) ──
+
+  /**
+   * Send a plain JSON packet (no payload) over the main TLS channel.
+   */
+  public sendJson(json: string): void {
+    if (!this.tlsSocket) {
+      console.warn('[KDE-MVP] sendJson: not connected');
+      return;
+    }
+    this.tlsSocket.send(json, (err: Object) => {
+      if (err) {
+        console.error('[KDE-MVP] sendJson failed:', JSON.stringify(err));
+      }
+    });
+  }
+
+  private payloadPort: number = 0;
+  private payloadServer: socket.TCPSocketServer | null = null;
+  private payloadConnection: socket.TCPSocketConnection | null = null;
+
+  /**
+   * Find a free port in the payload range and start a TCP server on it.
+   */
+  private async openPayloadPort(): Promise<void> {
+    for (let tryPort = PAYLOAD_TRANSFER_MIN_PORT; tryPort <= PAYLOAD_TRANSFER_MAX_PORT; tryPort++) {
+      const server: socket.TCPSocketServer = socket.constructTCPSocketServerInstance();
+      try {
+        const address: socket.NetAddress = { address: '0.0.0.0', port: tryPort, family: 1 };
+        await server.listen(address);
+        this.payloadPort = tryPort;
+        this.payloadServer = server;
+        return;
+      } catch (_e) {
+        try {
+          server.close();
+        } catch (_ignored) {
+        }
+      }
+    }
+    throw new Error('No free payload port in range');
+  }
+
+  /**
+   * Send a file using the dual-channel approach (matching Android LanLink.sendPacket).
+   */
+  public async sendPacketWithPayload(
+    body: KdeShareRequestBody,
+    filePath: string,
+    onProgress?: (percent: number) => void
+  ): Promise<void> {
+    if (!this.tlsSocket) {
+      throw new Error('Not connected');
+    }
+
+    // 1. Open payload TCP server
+    await this.openPayloadPort();
+
+    // 2. Get file size
+    let fileSize: number = 0;
+    try {
+      const stat: fileIo.Stat = fileIo.statSync(filePath);
+      fileSize = stat.size;
+    } catch (_e) {
+      this.cleanupPayload();
+      throw new Error('Cannot stat file: ' + filePath);
+    }
+
+    // 3. Send JSON metadata over main TLS channel
+    const payloadInfo: PayloadTransferInfo = { port: this.payloadPort };
+    const json: string = serializePacketWithPayload(
+      PACKET_TYPE_SHARE_REQUEST,
+      body,
+      fileSize,
+      payloadInfo
+    );
+
+    await new Promise<void>((resolve: (value: void) => void, reject: (reason: Error) => void) => {
+      this.tlsSocket!.send(json, (err: Object) => {
+        if (err) {
+          reject(new Error('Main-channel send failed'));
+        } else {
+          resolve();
+        }
+      });
+    });
+
+    // 4. Wait for PC to connect (10 s timeout)
+    const connected: socket.TCPSocketConnection = await new Promise<socket.TCPSocketConnection>(
+      (resolve: (value: socket.TCPSocketConnection) => void, reject: (reason: Error) => void) => {
+        const timeout: number = setTimeout(() => {
+          reject(new Error('Payload connection timed out'));
+        }, 10000) as number;
+
+        this.payloadServer!.on('connect', (client: socket.TCPSocketConnection) => {
+          clearTimeout(timeout);
+          this.payloadConnection = client;
+          resolve(client);
+        });
+
+        this.payloadServer!.on('error', (err: Object) => {
+          clearTimeout(timeout);
+          reject(new Error('Payload server error'));
+        });
+      });
+
+    // 5. Stream file bytes
+    try {
+      const file: fileIo.File = fileIo.openSync(filePath, fileIo.OpenMode.READ_ONLY);
+      const buf: ArrayBuffer = new ArrayBuffer(4096);
+      let totalSent: number = 0;
+      let lastProgressTime: number = Date.now();
+
+      try {
+        let bytesRead: number;
+        let chunk: ArrayBuffer;
+        while ((bytesRead = fileIo.readSync(file.fd, buf)) > 0) {
+          chunk = new ArrayBuffer(bytesRead);
+          const src: Uint8Array = new Uint8Array(buf, 0, bytesRead);
+          const dst: Uint8Array = new Uint8Array(chunk);
+          dst.set(src);
+
+          await new Promise<void>((res: () => void, rej: (e: Object) => void) => {
+            connected.send({ data: chunk }, (err: Object) => {
+              if (err) {
+                rej(err);
+              } else {
+                res();
+              }
+            });
+          });
+
+          totalSent += bytesRead;
+          if (onProgress && fileSize > 0) {
+            const now: number = Date.now();
+            if (now - lastProgressTime >= 500) {
+              lastProgressTime = now;
+              const percent: number = Math.round((totalSent * 100) / fileSize);
+              onProgress(percent);
+            }
+          }
+        }
+      } finally {
+        fileIo.closeSync(file);
+      }
+
+      if (onProgress) {
+        onProgress(100);
+      }
+
+      console.info('[KDE-MVP] File sent: ' + body.filename + ' (' + totalSent + ' bytes)');
+    } finally {
+      this.cleanupPayload();
+    }
+  }
+
+  private cleanupPayload(): void {
+    if (this.payloadConnection) {
+      try {
+        this.payloadConnection.close();
+      } catch (_e) {
+        // ignore
+      }
+      this.payloadConnection = null;
+    }
+    if (this.payloadServer) {
+      try {
+        this.payloadServer.close();
+      } catch (_e) {
+        // ignore
+      }
+      this.payloadServer = null;
+    }
+    this.payloadPort = 0;
   }
 
   public stop(): void {

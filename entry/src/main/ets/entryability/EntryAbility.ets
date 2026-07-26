@@ -2,6 +2,9 @@ import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.Ab
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { AppSession } from '../app/AppSession';
+import { FindMyPhoneHelper } from '../common/FindMyPhoneHelper';
+import { ImmersiveUtil } from '../common/ImmersiveUtil';
+import { UiTheme } from '../common/ui/UiTheme';
 
 const DOMAIN = 0x0000;
 
@@ -17,9 +20,34 @@ export default class EntryAbility extends UIAbility {
     // Start protocol stack at Ability level (survives page switches)
     AppSession.getInstance().ensureStarted(this.context).then(() => {
       hilog.info(DOMAIN, 'testTag', 'AppSession started');
+      this.handleWant(want);
     }).catch((e: Error) => {
       hilog.error(DOMAIN, 'testTag', 'AppSession start failed: %{public}s', e.message);
     });
+  }
+
+  onNewWant(want: Want, _launchParam: AbilityConstant.LaunchParam): void {
+    hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onNewWant');
+    this.handleWant(want);
+  }
+
+  /** Notification actions: open find UI or stop ring. */
+  private handleWant(want: Want): void {
+    let from = '';
+    if (want.parameters && want.parameters['fromNotification'] !== undefined) {
+      from = String(want.parameters['fromNotification']);
+    }
+    if (from === 'stopfindmyphone') {
+      hilog.info(DOMAIN, 'testTag', 'stop find-my-phone from notification action');
+      FindMyPhoneHelper.getInstance().stop();
+      return;
+    }
+    if (from === 'findmyphone') {
+      // Open control page if already ringing; do NOT stop
+      if (FindMyPhoneHelper.getInstance().isActive()) {
+        AppSession.getInstance().openFindPhonePage();
+      }
+    }
   }
 
   onDestroy(): void {
@@ -30,12 +58,16 @@ export default class EntryAbility extends UIAbility {
   onWindowStageCreate(windowStage: window.WindowStage): void {
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageCreate');
 
+    // Full-screen before first paint so status/nav bars blend with app surface.
+    ImmersiveUtil.prepaint(windowStage, UiTheme.pageBg, UiTheme.onSurface);
+
     windowStage.loadContent('pages/Index', (err) => {
       if (err.code) {
         hilog.error(DOMAIN, 'testTag', 'Failed to load the content. Cause: %{public}s', JSON.stringify(err));
         return;
       }
       hilog.info(DOMAIN, 'testTag', 'Succeeded in loading the content.');
+      ImmersiveUtil.applyChrome(UiTheme.pageBg, UiTheme.onSurface);
     });
   }
 
@@ -45,8 +77,10 @@ export default class EntryAbility extends UIAbility {
 
   onForeground(): void {
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onForeground');
-    // User opened the app — stop find-my-phone vibration / banner if ringing
-    AppSession.getInstance().getService().stopFindMyPhone();
+    // If ringing, show the stop UI — do not auto-stop on open alone
+    if (FindMyPhoneHelper.getInstance().isActive()) {
+      AppSession.getInstance().openFindPhonePage();
+    }
   }
 
   onBackground(): void {

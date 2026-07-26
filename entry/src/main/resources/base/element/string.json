@@ -31,6 +31,254 @@
     {
       "name": "permission_vibrate_reason",
       "value": "用于电脑端「找手机」时振动提醒"
+    },
+    {
+      "name": "permission_background_reason",
+      "value": "用于应用在后台时持续响铃查找设备"
+    },
+    {
+      "name": "settings_device_name",
+      "value": "设备名称"
+    },
+    {
+      "name": "settings_choose_theme",
+      "value": "选择主题"
+    },
+    {
+      "name": "settings_theme_summary",
+      "value": "系统默认"
+    },
+    {
+      "name": "settings_persistent_notification",
+      "value": "持久通知"
+    },
+    {
+      "name": "settings_persistent_notification_summary",
+      "value": "点击在通知设置中启用/禁用"
+    },
+    {
+      "name": "settings_trusted_networks",
+      "value": "可信任网络"
+    },
+    {
+      "name": "settings_trusted_networks_summary",
+      "value": "限制仅对已知网络自动发现"
+    },
+    {
+      "name": "settings_add_devices_by_ip",
+      "value": "通过 IP 添加设备"
+    },
+    {
+      "name": "settings_add_devices_by_ip_summary",
+      "value": "自定义设备列表"
+    },
+    {
+      "name": "settings_enable_bluetooth",
+      "value": "启用蓝牙 (beta)"
+    },
+    {
+      "name": "settings_export_logs",
+      "value": "导出 KDE Connect 日志"
+    },
+    {
+      "name": "settings_export_logs_summary",
+      "value": "生成包含执行信息的文件以帮助排查问题。"
+    },
+    {
+      "name": "settings_more_settings",
+      "value": "更多设置"
+    },
+    {
+      "name": "settings_more_settings_summary",
+      "value": "各设备设置可在设备内的「插件设置」中找到。"
+    },
+    {
+      "name": "settings_clear_pairs",
+      "value": "清除全部配对记录"
+    },
+    {
+      "name": "settings_clear_pairs_summary",
+      "value": "删除所有信任设备记录并断开连接。"
+    },
+    {
+      "name": "settings_clear_confirm_title",
+      "value": "清除全部配对记录？"
+    },
+    {
+      "name": "settings_clear_confirm_body",
+      "value": "此操作不可撤销。"
+    },
+    {
+      "name": "settings_cancel",
+      "value": "取消"
+    },
+    {
+      "name": "settings_clear",
+      "value": "清除"
+    },
+    {
+      "name": "settings_coming_soon",
+      "value": "即将推出"
+    },
+    {
+      "name": "settings_cleared_toast",
+      "value": "已清除配对记录。"
+    },
+    {
+      "name": "device_detail_title",
+      "value": "设备"
+    },
+    {
+      "name": "device_not_found",
+      "value": "未找到设备"
+    },
+    {
+      "name": "battery_unknown",
+      "value": "电量：—"
+    },
+    {
+      "name": "toast_ping_sent",
+      "value": "已发送 Ping"
+    },
+    {
+      "name": "plugin_send_files",
+      "value": "发送文件"
+    },
+    {
+      "name": "plugin_multimedia_control",
+      "value": "多媒体控制"
+    },
+    {
+      "name": "plugin_remote_input",
+      "value": "远程输入"
+    },
+    {
+      "name": "plugin_run_command",
+      "value": "运行命令"
+    },
+    {
+      "name": "plugin_presentation_remote",
+      "value": "演示遥控器"
+    },
+    {
+      "name": "plugin_drawing_tablet",
+      "value": "用作绘图板"
+    },
+    {
+      "name": "plugin_send_clipboard",
+      "value": "发送剪贴板"
+    },
+    {
+      "name": "menu_send_ping",
+      "value": "发送 Ping"
+    },
+    {
+      "name": "menu_ring",
+      "value": "响铃"
+    },
+    {
+      "name": "menu_plugin_settings",
+      "value": "插件设置"
+    },
+    {
+      "name": "menu_encryption_info",
+      "value": "加密信息"
+    },
+    {
+      "name": "menu_unpair",
+      "value": "取消配对"
+    },
+    {
+      "name": "pairing_not_paired_title",
+      "value": "设备未配对"
+    },
+    {
+      "name": "pairing_explanation",
+      "value": "配对后两台设备将能够相互访问。请只配对你自己的设备。"
+    },
+    {
+      "name": "pairing_connecting",
+      "value": "连接中…"
+    },
+    {
+      "name": "pairing_request_button",
+      "value": "请求配对"
+    },
+    {
+      "name": "pairing_accept",
+      "value": "接受"
+    },
+    {
+      "name": "pairing_reject",
+      "value": "拒绝"
+    },
+    {
+      "name": "unreachable_message",
+      "value": "该已配对设备无法访问。请确保它连接到同一网络。"
+    },
+    {
+      "name": "unreachable_refresh",
+      "value": "刷新"
+    },
+    {
+      "name": "plugins_permission_needed",
+      "value": "部分插件需要权限才能工作（点按了解更多）："
+    },
+    {
+      "name": "plugins_permission_disabled",
+      "value": "部分插件因缺少权限而功能受限（点按了解更多）："
+    },
+    {
+      "name": "plugins_connect_button",
+      "value": "连接"
+    },
+    {
+      "name": "encryption_my_fingerprint_label",
+      "value": "你的设备证书 SHA256 指纹："
+    },
+    {
+      "name": "encryption_cert_unavailable",
+      "value": "—（证书不可用）"
+    },
+    {
+      "name": "encryption_remote_fingerprint_label",
+      "value": "远程设备证书 SHA256 指纹："
+    },
+    {
+      "name": "encryption_not_connected",
+      "value": "—（未连接）"
+    },
+    {
+      "name": "encryption_protocol_version_label",
+      "value": "协议版本："
+    },
+    {
+      "name": "encryption_ok",
+      "value": "确定"
+    },
+    {
+      "name": "clipboard_dialog_title",
+      "value": "发送剪贴板"
+    },
+    {
+      "name": "clipboard_input_hint",
+      "value": "输入或粘贴文本..."
+    },
+    {
+      "name": "clipboard_send_button",
+      "value": "发送"
+    },
+    {
+      "name": "clipboard_send_toast",
+      "value": "剪贴板已发送"
+    },
+    {
+      "name": "file_send_done",
+      "value": "发送完成"
+    },
+    {
+      "name": "file_send_failed",
+      "value": "发送失败"
     }
   ]
 }

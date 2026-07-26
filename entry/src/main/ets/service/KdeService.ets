@@ -1,9 +1,11 @@
 import { common } from '@kit.AbilityKit';
 import { KdeDiscover } from './KdeDiscover';
 import { KdeClient } from './KdeClient';
+import { FileSendJob } from './FileSendJob';
 import {
   KdeDevice,
   KdeStatus,
+  KdeShareRequestBody,
   DeviceListItem,
   DeviceRowStatus,
   PeerBatteryInfo,
@@ -154,6 +156,8 @@ export class KdeService {
           peerBat = b;
         }
       }
+      // Reachable for UI: on LAN, active TLS session, or currently connecting to this peer.
+      let reachable = online || sessionActive || (isTarget && connecting);
       items.push({
         deviceId: t.deviceId,
         deviceName: name,
@@ -162,7 +166,7 @@ export class KdeService {
         tcpPort: tcpPort,
         protocolVersion: proto,
         trusted: true,
-        online: online || sessionActive,
+        online: reachable,
         sessionActive: sessionActive,
         status: status,
         statusLabel: statusLabel,
@@ -270,6 +274,25 @@ export class KdeService {
     this.client.sendClipboardFromText(text);
   }
 
+  /** Create a FileSendJob bound to this device session. */
+  public createFileSendJob(): FileSendJob {
+    return new FileSendJob(this.client);
+  }
+
+  /**
+   * Send a file using dual-channel (JSON on main TLS, raw bytes on temp TCP).
+   * @param body  Share-request metadata (filename, numberOfFiles, totalPayloadSize)
+   * @param filePath  Absolute device path of the file to send
+   * @param onProgress  Optional progress callback: (percent: 0-100) => void
+   */
+  public sendFileWithPayload(
+    body: KdeShareRequestBody,
+    filePath: string,
+    onProgress?: (percent: number) => void
+  ): Promise<void> {
+    return this.client.sendPacketWithPayload(body, filePath, onProgress);
+  }
+
   public sendPing(): void {
     this.client.sendPing();
   }
@@ -331,5 +354,18 @@ export class KdeService {
 
   public isStarted(): boolean {
     return this.started;
+  }
+
+  /** Re-announce on LAN (UI pull-to-refresh / toolbar refresh). */
+  public forceRefresh(): void {
+    if (!this.started) {
+      return;
+    }
+    this.discover.broadcastIdentity();
+    this.lastStatus = { state: 'discovering', message: '正在刷新设备列表…' };
+    if (this.statusCallback) {
+      this.statusCallback(this.lastStatus);
+    }
+    this.pushDeviceList();
   }
 }

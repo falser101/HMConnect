@@ -3,6 +3,7 @@
     "pages/Index",
     "pages/DeviceDetail",
     "pages/Settings",
-    "pages/About"
+    "pages/About",
+    "pages/FindMyPhone"
   ]
 }

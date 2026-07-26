@@ -2,7 +2,35 @@
   "color": [
     {
       "name": "start_window_background",
+      "value": "#FDFBFF"
+    },
+    {
+      "name": "page_background",
+      "value": "#FDFBFF"
+    },
+    {
+      "name": "card_background",
       "value": "#FFFFFF"
+    },
+    {
+      "name": "text_primary",
+      "value": "#1C1B1F"
+    },
+    {
+      "name": "text_secondary",
+      "value": "#49454F"
+    },
+    {
+      "name": "accent_primary",
+      "value": "#1A73E8"
+    },
+    {
+      "name": "kde_blue",
+      "value": "#3DAEE9"
+    },
+    {
+      "name": "accent_danger",
+      "value": "#CC2222"
     }
   ]
 }
