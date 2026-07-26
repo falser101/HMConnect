@@ -1,0 +1,36 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "HMConnect — HarmonyOS KDE Connect MVP"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "KDE Connect 局域网连接"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "HMConnect"
+    },
+    {
+      "name": "dependency_reason",
+      "value": "联网通信"
+    },
+    {
+      "name": "permission_internet_reason",
+      "value": "用于局域网发现与连接 KDE Connect 电脑端"
+    },
+    {
+      "name": "permission_network_reason",
+      "value": "用于获取网络状态以进行设备发现"
+    },
+    {
+      "name": "permission_notification_reason",
+      "value": "用于在收到电脑端 Ping 或找手机时显示系统通知"
+    },
+    {
+      "name": "permission_vibrate_reason",
+      "value": "用于电脑端「找手机」时振动提醒"
+    }
+  ]
+}
