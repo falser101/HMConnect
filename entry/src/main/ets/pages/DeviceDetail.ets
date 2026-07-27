@@ -12,7 +12,7 @@ import { FileSendJob } from '../service/FileSendJob';
 
 interface DeviceDetailParams {
   deviceId: string;
-  action?: string; // 'clipboard' | 'sendFile' from notification action
+  action?: string; // 'sendFile' from notification action
 }
 
 /** Plugin button definition — matches Android Plugin.PluginUiButton */
@@ -76,7 +76,7 @@ struct DeviceDetail {
       this.session.ensureStarted(ctx).then(() => {
         this.refreshItem();
         this.applyStatus(this.session.getLastStatus());
-        // Auto-trigger action from notification (clipboard / sendFile)
+        // Auto-trigger sendFile from notification action
         if (params && params.action) {
           setTimeout(() => { this.handleNotificationAction(params.action!); }, 500);
         }
@@ -85,11 +85,9 @@ struct DeviceDetail {
     this.ensureSubscriptions();
   }
 
-  /** Handle notification action buttons: clipboard or send-file. */
+  /** Handle notification action: send-file. */
   private handleNotificationAction(action: string): void {
-    if (action === 'clipboard') {
-      this.trySendClipboard();
-    } else if (action === 'sendFile') {
+    if (action === 'sendFile') {
       this.onSendFiles();
     }
   }

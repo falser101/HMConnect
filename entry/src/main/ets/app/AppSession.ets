@@ -1,5 +1,6 @@
 import { common } from '@kit.AbilityKit';
 import { UIContext, router } from '@kit.ArkUI';
+import pasteboard from '@ohos.pasteboard';
 import { KdeService } from '../service/KdeService';
 import { DeviceListItem, KdeStatus } from '../service/KdeTypes';
 import { FindMyPhoneHelper } from '../common/FindMyPhoneHelper';
@@ -110,13 +111,32 @@ export class AppSession {
     }
   }
 
-  /** Navigate to device detail from notification action. */
+  /**
+   * Directly read clipboard and send to target device.
+   * Mirrors Android ClipboardFloatingActivity (invisible, no UI, send-and-done).
+   */
   public openClipboardSendFor(deviceId: string): void {
-    if (this.uiContext) {
-      this.uiContext.getRouter().pushUrl({
-        url: 'pages/DeviceDetail',
-        params: { deviceId: deviceId, action: 'clipboard' }
+    try {
+      const sysPasteboard = pasteboard.getSystemPasteboard();
+      sysPasteboard.getData((err: Error, data: pasteboard.PasteData) => {
+        if (err) {
+          console.error('[AppSession] clipboard read error:', err.message);
+          return;
+        }
+        if (!data) {
+          console.warn('[AppSession] clipboard empty');
+          return;
+        }
+        const text = data.getPrimaryText();
+        if (!text || text.trim().length === 0) {
+          console.warn('[AppSession] clipboard has no text');
+          return;
+        }
+        this.service.sendClipboardText(text.trim());
+        console.info('[AppSession] clipboard sent to', deviceId);
       });
+    } catch (e) {
+      console.error('[AppSession] openClipboardSendFor failed:', JSON.stringify(e));
     }
   }
 
