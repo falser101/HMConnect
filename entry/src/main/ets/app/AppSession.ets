@@ -1,6 +1,5 @@
 import { common } from '@kit.AbilityKit';
 import { UIContext, router } from '@kit.ArkUI';
-import pasteboard from '@ohos.pasteboard';
 import { KdeService } from '../service/KdeService';
 import { DeviceListItem, KdeStatus } from '../service/KdeTypes';
 import { FindMyPhoneHelper } from '../common/FindMyPhoneHelper';
@@ -111,21 +110,13 @@ export class AppSession {
     }
   }
 
-  /** Directly send clipboard to device (no UI, matches Android). */
+  /** Navigate to device detail from notification action. */
   public openClipboardSendFor(deviceId: string): void {
-    try {
-      const sysPasteboard = pasteboard.getSystemPasteboard();
-      sysPasteboard.getData((err: Error, data: pasteboard.PasteData) => {
-        if (!err && data) {
-          const text = data.getPrimaryText();
-          if (text && text.trim().length > 0) {
-            this.service.sendClipboardText(text.trim());
-            console.info('[AppSession] clipboard sent to', deviceId);
-          }
-        }
+    if (this.uiContext) {
+      this.uiContext.getRouter().pushUrl({
+        url: 'pages/DeviceDetail',
+        params: { deviceId: deviceId, action: 'clipboard' }
       });
-    } catch (e) {
-      console.error('[AppSession] openClipboardSendFor failed:', JSON.stringify(e));
     }
   }
 
