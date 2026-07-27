@@ -1,5 +1,6 @@
 import { common } from '@kit.AbilityKit';
 import pasteboard from '@ohos.pasteboard';
+import { PasteButtonOnClickResult } from '@kit.ArkUI';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { AppSession } from '../app/AppSession';
 import { DeviceListItem, KdeStatus, ConnectionState, FileSendInfo } from '../service/KdeTypes';
@@ -42,6 +43,7 @@ struct DeviceDetail {
   @State menuOpacity: number = 0;
   // Dialogs
   @State showEncryptionDialog: boolean = false;
+  @State showPasteOverlay: boolean = false;
   // File send
   @State fileSending: boolean = false;
   @State fileProgress: number = 0;
@@ -250,30 +252,7 @@ struct DeviceDetail {
 
   private trySendClipboard(): void {
     this.closeMenu();
-    // Read system clipboard and send directly (matches Android).
-    // Silently fail if clipboard is empty or unreadable.
-    try {
-      let sysPasteboard = pasteboard.getSystemPasteboard();
-      sysPasteboard.getData((err: Error, data: pasteboard.PasteData) => {
-        if (err) {
-          console.warn('[DeviceDetail] clipboard read error:', err.message);
-          return;
-        }
-        if (!data) {
-          console.warn('[DeviceDetail] clipboard empty');
-          return;
-        }
-        let text = data.getPrimaryText();
-        if (!text || text.trim().length === 0) {
-          console.warn('[DeviceDetail] clipboard has no text');
-          return;
-        }
-        this.session.getService().sendClipboardText(text.trim());
-        this.showToast($r('app.string.clipboard_send_toast'));
-      });
-    } catch (_e) {
-      console.warn('[DeviceDetail] pasteboard unavailable');
-    }
+    this.showPasteOverlay = true;
   }
 
   private showToast(msg: ResourceStr): void {
@@ -811,7 +790,59 @@ struct DeviceDetail {
     .alignItems(HorizontalAlign.Start)
   }
 
-  // ── Clipboard send dialog ────────────────────────────────
+  // ── Paste overlay (system PasteButton for clipboard access) ──
+
+  @Builder
+  PasteOverlay() {
+    Column()
+      .width('100%')
+      .height('100%')
+      .backgroundColor('#33000000')
+      .onClick(() => {
+        this.showPasteOverlay = false;
+      })
+
+    Column() {
+      Text('发送剪贴板')
+        .fontSize(18)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(UiTheme.onSurface)
+        .width('100%')
+        .margin({ bottom: 16 })
+
+      Text('请点击下方按钮读取剪贴板并发送')
+        .fontSize(14)
+        .fontColor(UiTheme.textMuted)
+        .margin({ bottom: 20 })
+
+      PasteButton()
+        .padding({ top: 12, bottom: 12, left: 24, right: 24 })
+        .onClick((event: ClickEvent, result: PasteButtonOnClickResult) => {
+          if (PasteButtonOnClickResult.SUCCESS === result) {
+            pasteboard.getSystemPasteboard().getData((err: Error, pasteData: pasteboard.PasteData) => {
+              if (err) {
+                console.error('[DeviceDetail] paste error:', err.message);
+                this.showPasteOverlay = false;
+                return;
+              }
+              const text = pasteData.getPrimaryText();
+              if (text && text.trim().length > 0) {
+                this.session.getService().sendClipboardText(text.trim());
+                this.showToast($r('app.string.clipboard_send_toast'));
+              }
+              this.showPasteOverlay = false;
+            });
+          }
+        })
+    }
+    .width('90%')
+    .constraintSize({ maxWidth: 360 })
+    .padding(24)
+    .backgroundColor(UiTheme.cardBg)
+    .borderRadius(UiTheme.radiusCard)
+    .shadow({ radius: 16, color: '#40000000', offsetX: 0, offsetY: 8 })
+    .alignItems(HorizontalAlign.Center)
+  }
 
   // ── Root ─────────────────────────────────────────────────
 
@@ -875,6 +906,10 @@ struct DeviceDetail {
 
       if (this.showEncryptionDialog) {
         this.EncryptionDialog()
+      }
+
+      if (this.showPasteOverlay) {
+        this.PasteOverlay()
       }
 
       if (this.toastVisible) {
