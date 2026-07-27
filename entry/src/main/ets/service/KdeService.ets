@@ -47,7 +47,12 @@ export class KdeService {
     this.client.setStatusListener((status: KdeStatus) => {
       this.lastStatus = status;
       if (this.statusCallback) {
-        this.statusCallback(status);
+        const sc: (status: KdeStatus) => void = this.statusCallback;
+        setTimeout(() => {
+          if (this.statusCallback === sc) {
+            sc(status);
+          }
+        }, 0);
       }
       this.pushDeviceList();
     });
@@ -80,7 +85,15 @@ export class KdeService {
     if (!this.devicesCallback) {
       return;
     }
-    this.devicesCallback(this.buildDeviceList());
+    // Defer to next microtask so @State mutations never happen during ArkUI render.
+    // TLS message handlers fire in the same event-loop tick as build().
+    const cb: (items: DeviceListItem[]) => void = this.devicesCallback;
+    const items: DeviceListItem[] = this.buildDeviceList();
+    setTimeout(() => {
+      if (this.devicesCallback === cb) {
+        cb(items);
+      }
+    }, 0);
   }
 
   public buildDeviceList(): DeviceListItem[] {

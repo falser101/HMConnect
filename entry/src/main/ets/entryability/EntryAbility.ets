@@ -1,6 +1,7 @@
 import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
+import { fileUri } from '@kit.CoreFileKit';
 import { AppSession } from '../app/AppSession';
 import { FindMyPhoneHelper } from '../common/FindMyPhoneHelper';
 import { ImmersiveUtil } from '../common/ImmersiveUtil';
@@ -31,8 +32,59 @@ export default class EntryAbility extends UIAbility {
     this.handleWant(want);
   }
 
-  /** Notification actions: open find UI or stop ring. */
+  /** Notification actions: open file, share file, find phone, stop ring. */
   private handleWant(want: Want): void {
+    // File-open from notification tap
+    const openFile: string | undefined =
+      want.parameters !== undefined ? want.parameters['openFile'] as string : undefined;
+    if (openFile) {
+      hilog.info(DOMAIN, 'testTag', 'Open file from notification: %{public}s', openFile);
+      try {
+        const uri: string = openFile.startsWith('file://') ? openFile : fileUri.getUriFromPath(openFile);
+        const ext: string = openFile.substring(openFile.lastIndexOf('.') + 1).toLowerCase();
+        const mimeMap: Record<string, string> = {
+          'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png',
+          'gif': 'image/gif', 'bmp': 'image/bmp', 'webp': 'image/webp',
+          'mp4': 'video/mp4', 'mkv': 'video/x-matroska',
+          'mp3': 'audio/mpeg', 'pdf': 'application/pdf',
+          'txt': 'text/plain'
+        };
+        const mime: string = mimeMap[ext] ?? 'application/octet-stream';
+        this.context.startAbility({
+          action: 'ohos.want.action.viewData',
+          uri: uri,
+          type: mime
+        }).catch((e: Error) => {
+          hilog.error(DOMAIN, 'testTag', 'startAbility for file failed: %{public}s', e.message);
+        });
+      } catch (e) {
+        hilog.error(DOMAIN, 'testTag', 'Open file failed: %{public}s', JSON.stringify(e));
+      }
+      return;
+    }
+
+    // Share-file from notification action button
+    const shareFile: string | undefined =
+      want.parameters !== undefined ? want.parameters['shareFile'] as string : undefined;
+    if (shareFile) {
+      hilog.info(DOMAIN, 'testTag', 'Share file from notification: %{public}s', shareFile);
+      try {
+        const uri: string = shareFile.startsWith('file://') ? shareFile : fileUri.getUriFromPath(shareFile);
+        const mime: string = (want.parameters !== undefined ? want.parameters['shareMime'] as string : undefined) ??
+          'application/octet-stream';
+        this.context.startAbility({
+          action: 'ohos.want.action.sendData',
+          uri: uri,
+          type: mime
+        }).catch((e: Error) => {
+          hilog.error(DOMAIN, 'testTag', 'shareAbility for file failed: %{public}s', e.message);
+        });
+      } catch (e) {
+        hilog.error(DOMAIN, 'testTag', 'Share file failed: %{public}s', JSON.stringify(e));
+      }
+      return;
+    }
+
     let from = '';
     if (want.parameters && want.parameters['fromNotification'] !== undefined) {
       from = String(want.parameters['fromNotification']);

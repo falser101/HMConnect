@@ -151,6 +151,8 @@ export interface KdePacket<T> {
   id: number;
   type: string;
   body: T;
+  payloadSize?: number;
+  payloadTransferInfo?: PayloadTransferInfo;
 }
 
 export type ConnectionState =
@@ -219,10 +221,26 @@ export function parsePacketLine(line: string): KdePacket<object> | null {
     return null;
   }
   try {
-    let obj = JSON.parse(trimmed) as KdePacket<object>;
-    if (obj && typeof obj.type === 'string') {
-      return obj;
+    let raw: Record<string, Object> = JSON.parse(trimmed) as Record<string, Object>;
+    if (!raw || typeof raw['type'] !== 'string') {
+      return null;
     }
+    let packet: KdePacket<object> = {
+      id: typeof raw['id'] === 'number' ? raw['id'] as number : 0,
+      type: raw['type'] as string,
+      body: (raw['body'] ?? ({} as Record<string, Object>)) as object,
+    };
+    // Capture payload metadata when present (needed for kdeconnect.share.request)
+    if (typeof raw['payloadSize'] === 'number') {
+      packet.payloadSize = raw['payloadSize'] as number;
+    }
+    if (raw['payloadTransferInfo'] !== undefined && raw['payloadTransferInfo'] !== null) {
+      let pti: Record<string, Object> = raw['payloadTransferInfo'] as Record<string, Object>;
+      if (typeof pti['port'] === 'number') {
+        packet.payloadTransferInfo = { port: pti['port'] as number };
+      }
+    }
+    return packet;
   } catch (_e) {
     // ignore non-json (e.g. TLS binary noise)
   }

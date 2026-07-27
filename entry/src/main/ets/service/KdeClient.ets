@@ -1,7 +1,7 @@
 import socket from '@ohos.net.socket';
 import deviceInfo from '@ohos.deviceInfo';
 import pasteboard from '@ohos.pasteboard';
-import { fileIo } from '@kit.CoreFileKit';
+import { fileIo, picker, fileUri } from '@kit.CoreFileKit';
 import { common } from '@kit.AbilityKit';
 import {
   KdeDevice,
@@ -11,6 +11,7 @@ import {
   KdePingBody,
   KdeBatteryBody,
   KdeShareRequestBody,
+  KdePacket,
   PayloadTransferInfo,
   PeerBatteryInfo,
   KdeStatus,
@@ -53,6 +54,16 @@ export class KdeClient {
   private bridgeLocalAccepted: socket.TCPSocketConnection | null = null;
   private bridgeLocalServer: socket.TCPSocketServer | null = null;
   private bridgeLocalClient: socket.TCPSocket | null = null;
+
+  // ── Outbound connection state (we initiate TCP to peer) ──
+  private outboundActive: boolean = false;
+  private outPeerSock: socket.TCPSocket | null = null;
+  private outBridgeServer: socket.TCPSocketServer | null = null;
+  private outBridgeAccepted: socket.TCPSocketConnection | null = null;
+  private outBridgeClient: socket.TCPSocket | null = null;
+  private outTlsServer: socket.TLSSocketServer | null = null;
+  private outTlsFeeder: socket.TCPSocket | null = null;
+  private outTlsConn: socket.TLSSocketConnection | null = null;
 
   private paired: boolean = false;
   private sessionLive: boolean = false; // TLS channel established (may not be paired yet)
@@ -244,10 +255,8 @@ export class KdeClient {
   }
 
   /**
-   * User tapped "连接": only reverse path is used for TLS.
-   * Outbound TCP+TLS is NOT attempted — HarmonyOS can only be TLS client, but
-   * outbound KDE role requires TLS server, which caused false "TLS 握手失败" UI.
-   * We unicast identity so the PC connects back to our TCP server.
+   * User tapped "连接": try reverse path first (UDP poke → wait for PC to connect back).
+   * If the peer does not connect back within 5 s, initiate an outbound TLS connection.
    */
   public connectToDevice(device: KdeDevice): void {
     this.peerDevice = device;
@@ -265,6 +274,18 @@ export class KdeClient {
     this.sessionGen += 1;
     this.pairRequestSentForGen = -1;
     this.handlingIncoming = false;
+    this.pokeOutboundIdentity(device);
+
+    // Start a background race: wait 5 s for reverse-path incoming, then try outbound.
+    const gen: number = this.sessionGen;
+    const deviceSnapshot: KdeDevice = {
+      deviceId: device.deviceId,
+      deviceName: device.deviceName,
+      ip: device.ip,
+      tcpPort: device.tcpPort,
+      protocolVersion: device.protocolVersion,
+      deviceType: device.deviceType
+    };
     this.emit(
       'connecting',
       this.isTrusted(device.deviceId)
@@ -272,8 +293,17 @@ export class KdeClient {
         : `已通知 ${device.deviceName}，等待电脑连入并确认配对…`,
       { peerName: device.deviceName, peerDeviceId: device.deviceId }
     );
-    // Optional: plain TCP identity poke (no TLS) — helps some KDE builds notice us, then close.
-    this.pokeOutboundIdentity(device);
+
+    setTimeout(() => {
+      if (gen !== this.sessionGen) {
+        return;
+      }
+      if (this.sessionLive) {
+        return; // Reverse path succeeded
+      }
+      console.info('[KDE-MVP] Reverse path timeout, trying outbound…');
+      this.connectOutbound(deviceSnapshot, gen);
+    }, 5000);
   }
 
   /** Fire-and-forget: send plain identity then close. Never upgrades TLS / never emits error. */
@@ -298,6 +328,275 @@ export class KdeClient {
     });
   }
 
+  /**
+   * Outbound connection: we initiate TCP to the peer, bridge through
+   * loopback pair + TLSSocketServer so we can be the TLS server.
+   *
+   * Flow:
+   *   peerSock (TCP → peer) ↔ bridge loopback ↔ TLSSocketServer.accept
+   *   After TLS handshake, the TLSSocketConnection is our secure channel.
+   *
+   * Matches Android udpPacketReceived → identityPacketReceived(Remotely, clientMode=false).
+   */
+  private async connectOutbound(device: KdeDevice, gen: number): Promise<void> {
+    if (gen !== this.sessionGen) {
+      return;
+    }
+    if (this.outboundActive) {
+      return;
+    }
+
+    this.outboundActive = true;
+    this.handlingIncoming = true;
+    this.peerDevice = device;
+
+    this.emit('connecting', `正在主动连接 ${device.deviceName}…`, {
+      peerName: device.deviceName,
+      peerDeviceId: device.deviceId
+    });
+
+    let bridgePort: number = 0;
+    let tlsServerPort: number = 0;
+    let peerSock: socket.TCPSocket | null = null;
+    let bridgeServer: socket.TCPSocketServer | null = null;
+    let tlsServer: socket.TLSSocketServer | null = null;
+
+    try {
+      // ── 1. Open loopback bridge server ──
+      for (let p = 38200; p <= 38220; p++) {
+        const srv: socket.TCPSocketServer = socket.constructTCPSocketServerInstance();
+        try {
+          await srv.listen({ address: '127.0.0.1', port: p, family: 1 });
+          bridgePort = p;
+          bridgeServer = srv;
+          break;
+        } catch (_e) {
+          try { srv.close(); } catch (_ignored) {}
+        }
+      }
+      if (!bridgeServer) {
+        throw new Error('No free bridge port');
+      }
+      this.outBridgeServer = bridgeServer;
+
+      // ── 2. Open TLSSocketServer on loopback ──
+      for (let p = 38300; p <= 38320; p++) {
+        const srv: socket.TLSSocketServer = socket.constructTLSSocketServerInstance();
+        try {
+          await srv.listen({
+            address: { address: '127.0.0.1', port: p, family: 1 },
+            secureOptions: {
+              cert: this.certPem,
+              key: this.keyPem,
+              protocols: [socket.Protocol.TLSv12, socket.Protocol.TLSv13]
+            }
+          });
+          tlsServerPort = p;
+          tlsServer = srv;
+          break;
+        } catch (_e) {
+          try { srv.close(); } catch (_ignored) {}
+        }
+      }
+      if (!tlsServer) {
+        throw new Error('No free outbound TLS port');
+      }
+      this.outTlsServer = tlsServer;
+
+      // ── 3. Connect to peer ──
+      peerSock = socket.constructTCPSocketInstance();
+      await new Promise<void>((resolve: () => void, reject: (e: Error) => void) => {
+        peerSock!.connect({
+          address: { address: device.ip, port: device.tcpPort, family: 1 },
+          timeout: 5000
+        }, (err: Object) => {
+          if (err) {
+            reject(new Error('TCP connect failed'));
+          } else {
+            resolve();
+          }
+        });
+      });
+      this.outPeerSock = peerSock;
+
+      console.info(`[KDE-MVP] Outbound TCP connected to ${device.ip}:${device.tcpPort}`);
+
+      // ── 4. Wire up bridge components ──
+      const bridgeClient: socket.TCPSocket = socket.constructTCPSocketInstance();
+      await new Promise<void>((resolve: () => void, reject: (e: Error) => void) => {
+        bridgeClient.connect({
+          address: { address: '127.0.0.1', port: bridgePort, family: 1 },
+          timeout: 3000
+        }, (err: Object) => {
+          if (err) {
+            reject(new Error('Bridge client failed'));
+          } else {
+            resolve();
+          }
+        });
+      });
+      this.outBridgeClient = bridgeClient;
+
+      const bridgeAccepted: socket.TCPSocketConnection = await new Promise<socket.TCPSocketConnection>(
+        (resolve: (v: socket.TCPSocketConnection) => void, reject: (e: Error) => void) => {
+          const t: number = setTimeout(() => reject(new Error('Bridge accept timeout')), 5000) as number;
+          bridgeServer!.on('connect', (accepted: socket.TCPSocketConnection) => {
+            clearTimeout(t);
+            resolve(accepted);
+          });
+        });
+      this.outBridgeAccepted = bridgeAccepted;
+
+      const tlsFeeder: socket.TCPSocket = socket.constructTCPSocketInstance();
+      await new Promise<void>((resolve: () => void, reject: (e: Error) => void) => {
+        tlsFeeder.connect({
+          address: { address: '127.0.0.1', port: tlsServerPort, family: 1 },
+          timeout: 3000
+        }, (err: Object) => {
+          if (err) {
+            reject(new Error('TLS feeder failed'));
+          } else {
+            resolve();
+          }
+        });
+      });
+      this.outTlsFeeder = tlsFeeder;
+
+      // ── 5. Bidirectional forwarding ──
+      // peerSock ↔ bridgeClient
+      peerSock.on('message', (v: socket.SocketMessageInfo) => {
+        bridgeClient.send({ data: v.message }, (_e: Object) => {});
+      });
+      bridgeClient.on('message', (v: socket.SocketMessageInfo) => {
+        peerSock!.send({ data: v.message }, (_e: Object) => {});
+      });
+
+      // bridgeAccepted ↔ tlsFeeder
+      bridgeAccepted.on('message', (v: socket.SocketMessageInfo) => {
+        tlsFeeder.send({ data: v.message }, (_e: Object) => {});
+      });
+      tlsFeeder.on('message', (v: socket.SocketMessageInfo) => {
+        bridgeAccepted.send({ data: v.message }, (_e: Object) => {});
+      });
+
+      // ── 6. Send identity to peer (plain text, through the bridge) ──
+      const identity: string = this.buildIdentityPacket(device.deviceId, device.protocolVersion);
+      peerSock.send({ data: identity }, (_e: Object) => {});
+
+      console.info('[KDE-MVP] Outbound identity sent, waiting for TLS handshake…');
+      this.emit('tls_handshake', `正在与 ${device.deviceName} 建立加密通道…`, {
+        peerName: device.deviceName,
+        peerDeviceId: device.deviceId
+      });
+
+      // ── 7. Wait for TLS handshake via TLSSocketServer ──
+      const tlsConn: socket.TLSSocketConnection = await new Promise<socket.TLSSocketConnection>(
+        (resolve: (v: socket.TLSSocketConnection) => void, reject: (e: Error) => void) => {
+          const t: number = setTimeout(() => reject(new Error('TLS handshake timeout')), 15000) as number;
+          tlsServer!.on('connect', (conn: socket.TLSSocketConnection) => {
+            clearTimeout(t);
+            resolve(conn);
+          });
+        });
+
+      if (gen !== this.sessionGen) {
+        try { tlsConn.close(); } catch (_e) {}
+        this.cleanOutboundState();
+        return;
+      }
+
+      this.outTlsConn = tlsConn;
+      console.info('[KDE-MVP] Outbound TLS handshake complete');
+
+      // ── 8. Session is now live ──
+      this.sessionLive = true;
+      this.handlingIncoming = false;
+      this.notifySessionChange();
+      this.startBatteryReporting();
+
+      // Wire up message handler
+      tlsConn.on('message', (v: socket.SocketMessageInfo) => {
+        if (gen !== this.sessionGen) {
+          return;
+        }
+        this.onTlsData(v.message);
+      });
+
+      tlsConn.on('close', () => {
+        console.info('[KDE-MVP] Outbound TLS connection closed');
+        if (this.outboundActive) {
+          this.sessionLive = false;
+          this.outboundActive = false;
+          this.peerBattery = null;
+          this.stopBatteryReporting();
+          this.cleanOutboundState();
+          this.notifySessionChange();
+          if (!this.paired) {
+            this.emit('error', '连接已断开，可再次点连接');
+          } else {
+            this.emit('paired', '链路断开，等待电脑重连…', {
+              peerName: this.peerDevice?.deviceName
+            });
+          }
+        }
+      });
+
+      tlsConn.on('error', (err: Object) => {
+        console.error('[KDE-MVP] Outbound TLS error:', JSON.stringify(err));
+        if (gen === this.sessionGen && !this.paired) {
+          this.emit('error', '加密通道异常');
+        }
+      });
+
+      // ── 9. Handle pairing (same logic as upgradeClientTls callback) ──
+      const deviceId: string = device.deviceId;
+      if (this.isTrusted(deviceId) || this.paired) {
+        this.paired = true;
+        this.trustedDeviceIds.add(deviceId);
+        this.persistTrust(device).catch(() => {});
+        this.emit('paired', `已与 ${device.deviceName} 恢复加密连接`, {
+          peerName: device.deviceName,
+          peerDeviceId: device.deviceId
+        });
+        console.info('[KDE-MVP] Trusted device, skip pair request (outbound)');
+        return;
+      }
+
+      this.emit('connected', '已加密连接，请在电脑上点「接受」配对', {
+        peerName: device.deviceName,
+        peerDeviceId: device.deviceId
+      });
+      this.sendPairRequestOnce(gen, true);
+
+    } catch (e) {
+      console.error('[KDE-MVP] Outbound connection failed:', JSON.stringify(e));
+      if (gen === this.sessionGen) {
+        this.handlingIncoming = false;
+        this.emit('error', `无法连接 ${device.deviceName}`);
+      }
+      this.cleanOutboundState();
+    }
+  }
+
+  /** Release all outbound resources without touching reverse-path state. */
+  private cleanOutboundState(): void {
+    try { this.outTlsConn?.close(); } catch (_e) {}
+    this.outTlsConn = null;
+    try { this.outTlsFeeder?.close(); } catch (_e) {}
+    this.outTlsFeeder = null;
+    try { this.outTlsServer?.close(); } catch (_e) {}
+    this.outTlsServer = null;
+    try { this.outBridgeAccepted?.close(); } catch (_e) {}
+    this.outBridgeAccepted = null;
+    try { this.outBridgeClient?.close(); } catch (_e) {}
+    this.outBridgeClient = null;
+    try { this.outBridgeServer?.close(); } catch (_e) {}
+    this.outBridgeServer = null;
+    try { this.outPeerSock?.close(); } catch (_e) {}
+    this.outPeerSock = null;
+    this.outboundActive = false;
+  }
+
   private buildIdentityPacket(targetId?: string, targetProto?: number): string {
     let body: KdeIdentityBody = {
       deviceId: MY_DEVICE_ID,
@@ -318,6 +617,15 @@ export class KdeClient {
   private handleIncomingConnection(client: socket.TCPSocketConnection): void {
     // While we already have a healthy encrypted session, drop duplicates.
     // Periodic UDP identity makes KDE Connect reconnect every few seconds.
+    if (this.outboundActive) {
+      console.info('[KDE-MVP] Reject concurrent TCP: outbound connection in progress');
+      try {
+        client.close();
+      } catch (_e) {
+        // ignore
+      }
+      return;
+    }
     if (this.sessionLive && this.handlingIncoming === false) {
       console.info('[KDE-MVP] Reject concurrent TCP: session already live');
       try {
@@ -656,14 +964,16 @@ export class KdeClient {
         if (!packet) {
           continue;
         }
-        this.dispatchPacket(packet.type, packet.body);
+        this.dispatchPacket(packet);
       }
     } catch (e) {
       console.error('[KDE-MVP] TLS data parse error:', JSON.stringify(e));
     }
   }
 
-  private dispatchPacket(type: string, body: object): void {
+  private dispatchPacket(packet: KdePacket<object>): void {
+    const type: string = packet.type;
+    const body: object = packet.body;
     console.info(`[KDE-MVP] Packet: ${type}`);
     if (type === 'kdeconnect.pair') {
       let pairBody = body as KdePairBody;
@@ -681,15 +991,23 @@ export class KdeClient {
           peerDeviceId: this.peerDevice?.deviceId
         });
       } else {
-        // Unpair / reject — only clear trust for current peer
+        // Unpair / reject — match Android PairingHandler.packetReceived(pair=false)
+        const wasPaired: boolean = this.paired;
+        const wasRequesting: boolean = this.pairRequestSentForGen >= 0;
         this.paired = false;
-        if (this.peerDevice) {
-          this.removeTrust(this.peerDevice.deviceId).catch(() => {
-          });
-        }
         this.pairRequestSentForGen = -1;
         this.notifySessionChange();
-        this.emit('error', '配对被拒绝或已取消配对');
+        if (this.peerDevice) {
+          this.removeTrust(this.peerDevice.deviceId).catch(() => {});
+          if (wasRequesting && !wasPaired) {
+            // We sent a pair request, PC rejected → show error (Android: pairingFailed)
+            this.emit('error', '配对被拒绝');
+          } else if (wasPaired) {
+            // Already paired → PC unpaired us silently (Android: unpaired callback, no toast)
+            console.info('[KDE-MVP] Peer unpaired us, trust cleared');
+          }
+          // else: already NotPaired, ignore (Android: "Ignoring unpair request for already unpaired device")
+        }
       }
       return;
     }
@@ -757,6 +1075,211 @@ export class KdeClient {
         { peerName: peerName, peerDeviceId: this.peerDevice?.deviceId });
       return;
     }
+
+    if (type === PACKET_TYPE_SHARE_REQUEST) {
+      this.handleIncomingShareRequest(packet);
+      return;
+    }
+  }
+
+  /**
+   * Receive a file from the peer — matches Android LanLink.receivedNetworkPacket +
+   * SharePlugin.receiveFile / CompositeReceiveFileJob.
+   *
+   * Flow: connect TLS client to peer's payload port → read bytes → save to local file.
+   */
+  private async handleIncomingShareRequest(packet: KdePacket<object>): Promise<void> {
+    const body: KdeShareRequestBody = packet.body as KdeShareRequestBody;
+    const filename: string = body.filename ?? `received_${Date.now()}`;
+    const totalPayloadSize: number = body.totalPayloadSize;
+    const payloadSize: number = packet.payloadSize ?? totalPayloadSize;
+
+    if (!packet.payloadTransferInfo || !packet.payloadTransferInfo.port) {
+      console.error('[KDE-MVP] share.request missing payloadTransferInfo.port');
+      return;
+    }
+    if (!this.peerDevice) {
+      console.error('[KDE-MVP] share.request but no peer device');
+      return;
+    }
+    if (!this.context) {
+      console.error('[KDE-MVP] share.request but no context for file save');
+      return;
+    }
+
+    const payloadPort: number = packet.payloadTransferInfo.port;
+    const peerIp: string = this.peerDevice.ip;
+    console.info(`[KDE-MVP] Receiving file "${filename}" (${payloadSize} bytes) from ${peerIp}:${payloadPort}`);
+
+    let tcp: socket.TCPSocket | null = null;
+    let tls: socket.TLSSocket | null = null;
+    let outFile: fileIo.File | null = null;
+
+    try {
+      // 1. Connect plain TCP to sender's payload port
+      tcp = socket.constructTCPSocketInstance();
+      await new Promise<void>((resolve: () => void, reject: (e: Error) => void) => {
+        tcp!.connect({
+          address: { address: peerIp, port: payloadPort, family: 1 },
+          timeout: 10000
+        }, (err: Object) => {
+          if (err) {
+            reject(new Error('Payload TCP connect failed'));
+          } else {
+            resolve();
+          }
+        });
+      });
+
+      // 2. Upgrade to TLS client (matches Android: clientMode=true)
+      tls = socket.constructTLSSocketInstance(tcp);
+      const secureOpts: socket.TLSSecureOptions = {
+        protocols: [socket.Protocol.TLSv12, socket.Protocol.TLSv13]
+      };
+      if (this.certPem.length > 0 && this.keyPem.length > 0) {
+        secureOpts.cert = this.certPem;
+        secureOpts.key = this.keyPem;
+      }
+
+      // Register recv handlers BEFORE connect — sender starts streaming right after handshake
+      const chunks: Uint8Array[] = [];
+      let totalRead: number = 0;
+      let recvResolve: (() => void) | null = null;
+      let recvReject: ((e: Error) => void) | null = null;
+      let recvTimer: number = -1;
+
+      tls.on('message', (v: socket.SocketMessageInfo) => {
+        const srcLen: number = v.message.byteLength;
+        if (srcLen === 0) {
+          return;
+        }
+        const src: Uint8Array = new Uint8Array(v.message);
+        const copy: Uint8Array = new Uint8Array(srcLen);
+        copy.set(src);
+        chunks.push(copy);
+        totalRead += srcLen;
+        if (totalRead >= payloadSize && recvResolve) {
+          clearTimeout(recvTimer);
+          recvResolve();
+        }
+      });
+
+      tls.on('close', () => {
+        clearTimeout(recvTimer);
+        if (totalRead >= payloadSize) {
+          recvResolve?.();
+        } else {
+          setTimeout(() => {
+            if (totalRead < payloadSize) {
+              recvReject?.(new Error(`Payload closed early: got ${totalRead}/${payloadSize}`));
+            } else {
+              recvResolve?.();
+            }
+          }, 200);
+        }
+      });
+
+      tls.on('error', (_err: Object) => {
+        clearTimeout(recvTimer);
+        recvReject?.(new Error('Payload TLS error'));
+      });
+
+      await new Promise<void>((resolve: () => void, reject: (e: Error) => void) => {
+        tls!.connect({
+          address: { address: peerIp, port: payloadPort, family: 1 },
+          secureOptions: secureOpts,
+          skipRemoteValidation: true
+        }, (err: Object) => {
+          if (err) {
+            reject(new Error('Payload TLS handshake failed'));
+          } else {
+            resolve();
+          }
+        });
+      });
+
+      console.info(`[KDE-MVP] Payload TLS connected, reading ${payloadSize} bytes…`);
+
+      // 3. Save received bytes to temp file first
+      const safeName: string = filename.replace(/[\\\/:*?"<>|]/g, '_');
+      const tmpDir: string = `${this.context!.cacheDir}`;
+      const tmpPath: string = `${tmpDir}/${safeName}`;
+      outFile = fileIo.openSync(tmpPath, fileIo.OpenMode.CREATE | fileIo.OpenMode.WRITE_ONLY |
+        fileIo.OpenMode.TRUNC);
+
+      // 4. Wait for all payload bytes (handlers already registered)
+      await new Promise<void>((resolve: () => void, reject: (e: Error) => void) => {
+        recvResolve = resolve;
+        recvReject = reject;
+        recvTimer = setTimeout(() => {
+          reject(new Error('Payload read timeout'));
+        }, 30000) as number;
+        if (totalRead >= payloadSize) {
+          clearTimeout(recvTimer);
+          resolve();
+        }
+      });
+
+      // 5. Write chunks to temp file then close
+      for (let i = 0; i < chunks.length; i++) {
+        fileIo.writeSync(outFile.fd, chunks[i].buffer);
+      }
+      fileIo.closeSync(outFile);
+      outFile = null;
+
+      console.info(`[KDE-MVP] Temp file saved: ${tmpPath} (${totalRead} bytes)`);
+
+      // 6. Auto-save to Download/<bundleName>/ via DOWNLOAD mode (no user picker)
+      let finalPath: string = tmpPath;
+      try {
+        const saveOpts: picker.DocumentSaveOptions = new picker.DocumentSaveOptions();
+        saveOpts.pickerMode = picker.DocumentPickerMode.DOWNLOAD;
+        const docPicker: picker.DocumentViewPicker = new picker.DocumentViewPicker(this.context!);
+        const uris: string[] = await docPicker.save(saveOpts);
+        if (uris && uris.length > 0) {
+          const dirUri: string = uris[0];
+          // Build target path: dirUri/filename
+          const targetUri: string = new fileUri.FileUri(`${dirUri}/${safeName}`).path;
+          // Copy temp → Download/<bundleName>/
+          const src: fileIo.File = fileIo.openSync(tmpPath, fileIo.OpenMode.READ_ONLY);
+          const dst: fileIo.File = fileIo.openSync(targetUri, fileIo.OpenMode.CREATE |
+            fileIo.OpenMode.WRITE_ONLY | fileIo.OpenMode.TRUNC);
+          const copyBuf: ArrayBuffer = new ArrayBuffer(8192);
+          let n: number;
+          while ((n = fileIo.readSync(src.fd, copyBuf)) > 0) {
+            const slice: ArrayBuffer = new ArrayBuffer(n);
+            const sv: Uint8Array = new Uint8Array(slice);
+            sv.set(new Uint8Array(copyBuf, 0, n));
+            fileIo.writeSync(dst.fd, slice);
+          }
+          fileIo.closeSync(src);
+          fileIo.closeSync(dst);
+          finalPath = targetUri;
+          console.info(`[KDE-MVP] File saved to Download: ${targetUri}`);
+          // Clean up temp
+          try { fileIo.unlinkSync(tmpPath); } catch (_u) {}
+        }
+      } catch (pickerErr) {
+        console.warn('[KDE-MVP] DOWNLOAD mode failed, file stays in temp:', JSON.stringify(pickerErr));
+      }
+
+      // 7. Notify user
+      AppNotifier.getInstance().notifyFileReceived(safeName, finalPath).catch((e: Error) => {
+        console.error('[KDE-MVP] File receive notify failed:', e.message);
+      });
+
+      this.emit(this.paired ? 'paired' : 'connected', `收到文件: ${safeName}`);
+
+    } catch (e) {
+      console.error('[KDE-MVP] File receive failed:', JSON.stringify(e));
+      if (outFile) {
+        try { fileIo.closeSync(outFile); } catch (_e) {}
+      }
+      this.emit('error', `接收文件失败: ${filename}`);
+    } finally {
+      try { tls?.close(); } catch (_e) {}
+      try { tcp?.close(); } catch (_e) {}
+    }
   }
 
   /** Send local battery now and refresh every 60s while session is live. */
@@ -764,7 +1287,7 @@ export class KdeClient {
     this.stopBatteryReporting();
     this.sendLocalBattery(true);
     this.batteryTimer = setInterval(() => {
-      if (!this.sessionLive || !this.tlsSocket) {
+      if (!this.sessionLive || !this.isTlsLive()) {
         this.stopBatteryReporting();
         return;
       }
@@ -781,7 +1304,7 @@ export class KdeClient {
   }
 
   private sendLocalBattery(force: boolean): void {
-    if (!this.tlsSocket || !this.sessionLive) {
+    if (!this.isTlsLive() || !this.sessionLive) {
       return;
     }
     let body = BatteryHelper.readLocalBattery();
@@ -793,7 +1316,7 @@ export class KdeClient {
     this.lastSentCharge = body.currentCharge;
     this.lastSentCharging = body.isCharging;
     let json: string = serializePacket('kdeconnect.battery', body);
-    this.tlsSocket.send(json, (err) => {
+    this.sendTls(json, (err) => {
       if (err) {
         console.error('[KDE-MVP] Battery send failed:', JSON.stringify(err));
       } else {
@@ -805,7 +1328,7 @@ export class KdeClient {
   }
 
   private sendPairRequestOnce(gen: number, pair: boolean): void {
-    if (!this.tlsSocket || gen !== this.sessionGen) {
+    if (!this.isTlsLive() || gen !== this.sessionGen) {
       return;
     }
     if (pair && this.pairRequestSentForGen === gen) {
@@ -824,7 +1347,7 @@ export class KdeClient {
     if (pair) {
       this.pairRequestSentForGen = gen;
     }
-    this.tlsSocket.send(json, (err) => {
+    this.sendTls(json, (err) => {
       if (gen !== this.sessionGen) {
         return;
       }
@@ -858,13 +1381,13 @@ export class KdeClient {
   }
 
   public sendClipboard(text: string): void {
-    if (!this.tlsSocket) {
+    if (!this.isTlsLive()) {
       this.emit('error', '未连接，无法发送剪贴板');
       return;
     }
     let body: KdeClipboardBody = { content: text };
     let json: string = serializePacket('kdeconnect.clipboard', body);
-    this.tlsSocket.send(json, (err) => {
+    this.sendTls(json, (err) => {
       if (err) {
         console.error('[KDE-MVP] Clipboard send failed:', JSON.stringify(err));
       } else {
@@ -877,13 +1400,13 @@ export class KdeClient {
   }
 
   public sendPing(message: string = 'Hello from HarmonyOS'): void {
-    if (!this.tlsSocket) {
+    if (!this.isTlsLive()) {
       this.emit('error', '未连接，无法 Ping');
       return;
     }
     let body: KdePingBody = { message: message };
     let json: string = serializePacket('kdeconnect.ping', body);
-    this.tlsSocket.send(json, (err) => {
+    this.sendTls(json, (err) => {
       if (err) {
         console.error('[KDE-MVP] Ping failed:', JSON.stringify(err));
       } else {
@@ -918,12 +1441,7 @@ export class KdeClient {
     this.stopBatteryReporting();
     FindMyPhoneHelper.getInstance().stop();
     this.notifySessionChange();
-    try {
-      this.tlsSocket?.close();
-    } catch (_e) {
-      // ignore
-    }
-    this.tlsSocket = null;
+    this.closeTlsChannel();
     try {
       this.bridgeLocalClient?.close();
     } catch (_e) {
@@ -959,12 +1477,12 @@ export class KdeClient {
    */
   public async unpair(deviceId?: string): Promise<void> {
     let id: string | undefined = deviceId ?? this.peerDevice?.deviceId;
-    if (this.tlsSocket && this.sessionLive && id && this.peerDevice?.deviceId === id) {
+    if (this.isTlsLive() && this.sessionLive && id && this.peerDevice?.deviceId === id) {
       let body: KdePairBody = { pair: false };
       let json: string = serializePacket('kdeconnect.pair', body);
       try {
         await new Promise<void>((resolve) => {
-          this.tlsSocket?.send(json, () => {
+          this.sendTls(json, () => {
             resolve();
           });
         });
@@ -985,12 +1503,7 @@ export class KdeClient {
     this.stopBatteryReporting();
     FindMyPhoneHelper.getInstance().stop();
     this.notifySessionChange();
-    try {
-      this.tlsSocket?.close();
-    } catch (_e) {
-      // ignore
-    }
-    this.tlsSocket = null;
+    this.closeTlsChannel();
     try {
       this.bridgeLocalClient?.close();
     } catch (_e) {
@@ -1026,17 +1539,59 @@ export class KdeClient {
     return this.sessionLive && this.peerDevice?.deviceId === deviceId;
   }
 
-  // ── File transfer (dual-channel: JSON on main TLS, raw bytes on temp TCP) ──
+  // ── TLS channel abstraction (works for both reverse + outbound) ──
+
+  private isTlsLive(): boolean {
+    if (this.outboundActive && this.outTlsConn !== null) {
+      return true;
+    }
+    return this.tlsSocket !== null;
+  }
+
+  /** Send a JSON string over whichever TLS channel is active. */
+  private sendTls(data: string, callback?: (err: Object) => void): void {
+    const cb: (err: Object) => void = callback ?? ((_e: Object) => {});
+    if (this.outboundActive && this.outTlsConn) {
+      this.outTlsConn.send(data, cb);
+    } else if (this.tlsSocket) {
+      this.tlsSocket.send(data, cb);
+    }
+  }
+
+  /** Close & null out whichever TLS channel + its bridges are live. */
+  private closeTlsChannel(): void {
+    if (this.outboundActive) {
+      try { this.outTlsConn?.close(); } catch (_e) {}
+      this.outTlsConn = null;
+      try { this.outTlsFeeder?.close(); } catch (_e) {}
+      this.outTlsFeeder = null;
+      try { this.outTlsServer?.close(); } catch (_e) {}
+      this.outTlsServer = null;
+      try { this.outBridgeAccepted?.close(); } catch (_e) {}
+      this.outBridgeAccepted = null;
+      try { this.outBridgeClient?.close(); } catch (_e) {}
+      this.outBridgeClient = null;
+      try { this.outBridgeServer?.close(); } catch (_e) {}
+      this.outBridgeServer = null;
+      try { this.outPeerSock?.close(); } catch (_e) {}
+      this.outPeerSock = null;
+      this.outboundActive = false;
+    }
+    try { this.tlsSocket?.close(); } catch (_e) {}
+    this.tlsSocket = null;
+  }
+
+  // ── File transfer (dual-channel: JSON on main TLS, TLS-encrypted payload on temp port) ──
 
   /**
    * Send a plain JSON packet (no payload) over the main TLS channel.
    */
   public sendJson(json: string): void {
-    if (!this.tlsSocket) {
+    if (!this.isTlsLive()) {
       console.warn('[KDE-MVP] sendJson: not connected');
       return;
     }
-    this.tlsSocket.send(json, (err: Object) => {
+    this.sendTls(json, (err: Object) => {
       if (err) {
         console.error('[KDE-MVP] sendJson failed:', JSON.stringify(err));
       }
@@ -1044,18 +1599,31 @@ export class KdeClient {
   }
 
   private payloadPort: number = 0;
-  private payloadServer: socket.TCPSocketServer | null = null;
-  private payloadConnection: socket.TCPSocketConnection | null = null;
+  private payloadServer: socket.TLSSocketServer | null = null;
+  private payloadConnection: socket.TLSSocketConnection | null = null;
 
   /**
-   * Find a free port in the payload range and start a TCP server on it.
+   * Find a free port in the payload range and start a TLS server on it.
+   * Matches Android: SslHelper.convertToSslSocket(..., clientMode=false)
+   * — the payload channel is a TLS server presenting the device cert.
    */
-  private async openPayloadPort(): Promise<void> {
+  private async openPayloadTlsPort(): Promise<void> {
     for (let tryPort = PAYLOAD_TRANSFER_MIN_PORT; tryPort <= PAYLOAD_TRANSFER_MAX_PORT; tryPort++) {
-      const server: socket.TCPSocketServer = socket.constructTCPSocketServerInstance();
+      const server: socket.TLSSocketServer = socket.constructTLSSocketServerInstance();
       try {
-        const address: socket.NetAddress = { address: '0.0.0.0', port: tryPort, family: 1 };
-        await server.listen(address);
+        const tlsListenOpts: socket.TLSConnectOptions = {
+          address: {
+            address: '0.0.0.0',
+            port: tryPort,
+            family: 1
+          },
+          secureOptions: {
+            cert: this.certPem,
+            key: this.keyPem,
+            protocols: [socket.Protocol.TLSv12, socket.Protocol.TLSv13]
+          }
+        };
+        await server.listen(tlsListenOpts);
         this.payloadPort = tryPort;
         this.payloadServer = server;
         return;
@@ -1066,7 +1634,7 @@ export class KdeClient {
         }
       }
     }
-    throw new Error('No free payload port in range');
+    throw new Error('No free TLS payload port in range');
   }
 
   /**
@@ -1077,12 +1645,12 @@ export class KdeClient {
     filePath: string,
     onProgress?: (percent: number) => void
   ): Promise<void> {
-    if (!this.tlsSocket) {
+    if (!this.isTlsLive()) {
       throw new Error('Not connected');
     }
 
-    // 1. Open payload TCP server
-    await this.openPayloadPort();
+    // 1. Open payload TLS server
+    await this.openPayloadTlsPort();
 
     // 2. Get file size
     let fileSize: number = 0;
@@ -1104,7 +1672,7 @@ export class KdeClient {
     );
 
     await new Promise<void>((resolve: (value: void) => void, reject: (reason: Error) => void) => {
-      this.tlsSocket!.send(json, (err: Object) => {
+      this.sendTls(json, (err: Object) => {
         if (err) {
           reject(new Error('Main-channel send failed'));
         } else {
@@ -1114,13 +1682,13 @@ export class KdeClient {
     });
 
     // 4. Wait for PC to connect (10 s timeout)
-    const connected: socket.TCPSocketConnection = await new Promise<socket.TCPSocketConnection>(
-      (resolve: (value: socket.TCPSocketConnection) => void, reject: (reason: Error) => void) => {
+    const connected: socket.TLSSocketConnection = await new Promise<socket.TLSSocketConnection>(
+      (resolve: (value: socket.TLSSocketConnection) => void, reject: (reason: Error) => void) => {
         const timeout: number = setTimeout(() => {
           reject(new Error('Payload connection timed out'));
         }, 10000) as number;
 
-        this.payloadServer!.on('connect', (client: socket.TCPSocketConnection) => {
+        this.payloadServer!.on('connect', (client: socket.TLSSocketConnection) => {
           clearTimeout(timeout);
           this.payloadConnection = client;
           resolve(client);
@@ -1149,7 +1717,7 @@ export class KdeClient {
           dst.set(src);
 
           await new Promise<void>((res: () => void, rej: (e: Object) => void) => {
-            connected.send({ data: chunk }, (err: Object) => {
+            connected.send(chunk, (err: Object) => {
               if (err) {
                 rej(err);
               } else {
