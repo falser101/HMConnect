@@ -4,6 +4,7 @@ import { window } from '@kit.ArkUI';
 import { fileUri } from '@kit.CoreFileKit';
 import { AppSession } from '../app/AppSession';
 import { FindMyPhoneHelper } from '../common/FindMyPhoneHelper';
+import { KdeBackgroundService } from '../service/KdeBackgroundService';
 import { ImmersiveUtil } from '../common/ImmersiveUtil';
 import { UiTheme } from '../common/ui/UiTheme';
 
@@ -22,6 +23,8 @@ export default class EntryAbility extends UIAbility {
     AppSession.getInstance().ensureStarted(this.context).then(() => {
       hilog.info(DOMAIN, 'testTag', 'AppSession started');
       this.handleWant(want);
+      // Start background service (continuous task + persistent notification)
+      KdeBackgroundService.getInstance().start(this.context);
     }).catch((e: Error) => {
       hilog.error(DOMAIN, 'testTag', 'AppSession start failed: %{public}s', e.message);
     });
@@ -104,6 +107,7 @@ export default class EntryAbility extends UIAbility {
 
   onDestroy(): void {
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onDestroy');
+    KdeBackgroundService.getInstance().stop();
     AppSession.getInstance().shutdown();
   }
 

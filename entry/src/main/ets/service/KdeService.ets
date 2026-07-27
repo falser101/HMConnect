@@ -369,6 +369,15 @@ export class KdeService {
     return this.started;
   }
 
+  /** Network change → tell discover to re-announce + re-scan. */
+  public onNetworkChange(): void {
+    if (!this.started) {
+      return;
+    }
+    console.info('[KdeService] onNetworkChange — triggering discover refresh');
+    this.discover.onNetworkChange();
+  }
+
   /** Re-announce on LAN (UI pull-to-refresh / toolbar refresh). */
   public forceRefresh(): void {
     if (!this.started) {

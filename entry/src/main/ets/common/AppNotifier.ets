@@ -349,4 +349,74 @@ export class AppNotifier {
     }
     return '文件';
   }
+
+  static readonly PERSISTENT_NOTIFY_ID: number = 1;
+
+  /**
+   * Persistent / ongoing notification showing connected device names.
+   * Mirrors Android BackgroundService.createForegroundNotification().
+   */
+  public async notifyPersistent(connectedNames: string[]): Promise<void> {
+    let ok = await this.ensureEnabled();
+    if (!ok || !this.context) {
+      return;
+    }
+
+    let tapAgent: WantAgent | undefined;
+    try {
+      const info: wantAgent.WantAgentInfo = {
+        wants: [{
+          deviceId: '',
+          bundleName: this.context.abilityInfo.bundleName,
+          moduleName: this.context.abilityInfo.moduleName,
+          abilityName: this.context.abilityInfo.name,
+          action: 'ohos.want.action.home'
+        }],
+        operationType: wantAgent.OperationType.START_ABILITY,
+        requestCode: AppNotifier.PERSISTENT_NOTIFY_ID,
+        wantAgentFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
+      };
+      tapAgent = await wantAgent.getWantAgent(info);
+    } catch (e) {
+      console.warn('[Notify] persistent agent failed:', JSON.stringify(e));
+    }
+
+    const text: string = connectedNames.length > 0
+      ? `已连接: ${connectedNames.join(', ')}`
+      : '没有已连接的设备';
+
+    const request: notificationManager.NotificationRequest = {
+      id: AppNotifier.PERSISTENT_NOTIFY_ID,
+      notificationSlotType: notificationManager.SlotType.SERVICE_INFORMATION,
+      content: {
+        notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
+        normal: {
+          title: 'HMConnect',
+          text: text
+        }
+      },
+      tapDismissed: false
+    };
+
+    if (tapAgent) {
+      request.wantAgent = tapAgent;
+    }
+
+    try {
+      await notificationManager.publish(request);
+      console.info('[Notify] persistent published:', text);
+    } catch (e) {
+      let err = e as BusinessError;
+      console.error(`[Notify] persistent publish failed: code=${err.code} ${err.message}`);
+    }
+  }
+
+  /** Remove the persistent notification. */
+  public cancelPersistent(): void {
+    try {
+      notificationManager.cancel(AppNotifier.PERSISTENT_NOTIFY_ID);
+    } catch (_e) {
+      // ignore
+    }
+  }
 }

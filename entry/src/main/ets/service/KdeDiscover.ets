@@ -221,6 +221,15 @@ export class KdeDiscover {
     this.broadcastIdentity(device.ip);
   }
 
+  /** Network change callback: fire an immediate announce so peers see us. */
+  public onNetworkChange(): void {
+    if (!this.running) {
+      return;
+    }
+    console.info('[KdeDiscover] onNetworkChange — re-announcing');
+    this.broadcastIdentity();
+  }
+
   public stopListen(): void {
     this.running = false;
     if (this.broadcastTimer !== -1) {
