@@ -353,18 +353,23 @@ export class AppNotifier {
   static readonly PERSISTENT_NOTIFY_ID: number = 1;
 
   /**
-   * Persistent / ongoing notification showing connected device names.
-   * Mirrors Android BackgroundService.createForegroundNotification().
+   * Persistent notification with action buttons (matches Android).
+   * Single device: "发送剪贴板" + "发送文件" buttons.
    */
-  public async notifyPersistent(connectedNames: string[]): Promise<void> {
+  public async notifyPersistent(connectedNames: string[], connectedIds: string[]): Promise<void> {
     let ok = await this.ensureEnabled();
     if (!ok || !this.context) {
       return;
     }
 
+    const text: string = connectedNames.length > 0
+      ? `已连接: ${connectedNames.join(', ')}`
+      : '没有已连接的设备';
+
+    // Build main tap agent
     let tapAgent: WantAgent | undefined;
     try {
-      const info: wantAgent.WantAgentInfo = {
+      tapAgent = await wantAgent.getWantAgent({
         wants: [{
           deviceId: '',
           bundleName: this.context.abilityInfo.bundleName,
@@ -375,15 +380,10 @@ export class AppNotifier {
         operationType: wantAgent.OperationType.START_ABILITY,
         requestCode: AppNotifier.PERSISTENT_NOTIFY_ID,
         wantAgentFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
-      };
-      tapAgent = await wantAgent.getWantAgent(info);
+      });
     } catch (e) {
       console.warn('[Notify] persistent agent failed:', JSON.stringify(e));
     }
-
-    const text: string = connectedNames.length > 0
-      ? `已连接: ${connectedNames.join(', ')}`
-      : '没有已连接的设备';
 
     const request: notificationManager.NotificationRequest = {
       id: AppNotifier.PERSISTENT_NOTIFY_ID,
@@ -400,6 +400,62 @@ export class AppNotifier {
 
     if (tapAgent) {
       request.wantAgent = tapAgent;
+    }
+
+    // Action buttons: only when exactly 1 device connected (matches Android)
+    if (connectedIds.length === 1) {
+      const deviceId: string = connectedIds[0];
+      const buttons: notificationManager.NotificationActionButton[] = [];
+
+      // Send clipboard button
+      try {
+        const clipAgent = await wantAgent.getWantAgent({
+          wants: [{
+            deviceId: '',
+            bundleName: this.context.abilityInfo.bundleName,
+            moduleName: this.context.abilityInfo.moduleName,
+            abilityName: this.context.abilityInfo.name,
+            action: 'ohos.want.action.home',
+            parameters: { 'sendClipboard': deviceId }
+          }],
+          operationType: wantAgent.OperationType.START_ABILITY,
+          requestCode: AppNotifier.PERSISTENT_NOTIFY_ID + 1,
+          wantAgentFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
+        });
+        buttons.push({
+          title: '发送剪贴板',
+          wantAgent: clipAgent
+        } as notificationManager.NotificationActionButton);
+      } catch (e) {
+        console.warn('[Notify] clipboard action agent failed:', JSON.stringify(e));
+      }
+
+      // Send file button
+      try {
+        const fileAgent = await wantAgent.getWantAgent({
+          wants: [{
+            deviceId: '',
+            bundleName: this.context.abilityInfo.bundleName,
+            moduleName: this.context.abilityInfo.moduleName,
+            abilityName: this.context.abilityInfo.name,
+            action: 'ohos.want.action.home',
+            parameters: { 'sendFile': deviceId }
+          }],
+          operationType: wantAgent.OperationType.START_ABILITY,
+          requestCode: AppNotifier.PERSISTENT_NOTIFY_ID + 2,
+          wantAgentFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
+        });
+        buttons.push({
+          title: '发送文件',
+          wantAgent: fileAgent
+        } as notificationManager.NotificationActionButton);
+      } catch (e) {
+        console.warn('[Notify] file action agent failed:', JSON.stringify(e));
+      }
+
+      if (buttons.length > 0) {
+        request.actionButtons = buttons;
+      }
     }
 
     try {

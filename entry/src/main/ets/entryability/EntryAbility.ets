@@ -88,6 +88,24 @@ export default class EntryAbility extends UIAbility {
       return;
     }
 
+    // Send-clipboard from persistent notification action button
+    const sendClipboard: string | undefined =
+      want.parameters !== undefined ? want.parameters['sendClipboard'] as string : undefined;
+    if (sendClipboard) {
+      hilog.info(DOMAIN, 'testTag', 'Send clipboard to device: %{public}s', sendClipboard);
+      AppSession.getInstance().openClipboardSendFor(sendClipboard);
+      return;
+    }
+
+    // Send-file from persistent notification action button
+    const sendFile: string | undefined =
+      want.parameters !== undefined ? want.parameters['sendFile'] as string : undefined;
+    if (sendFile) {
+      hilog.info(DOMAIN, 'testTag', 'Send file to device: %{public}s', sendFile);
+      AppSession.getInstance().openFileSendFor(sendFile);
+      return;
+    }
+
     let from = '';
     if (want.parameters && want.parameters['fromNotification'] !== undefined) {
       from = String(want.parameters['fromNotification']);

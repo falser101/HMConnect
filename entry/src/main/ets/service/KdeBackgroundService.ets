@@ -21,6 +21,7 @@ export class KdeBackgroundService {
   private deviceSubId: number = -1;
   private netConn: connection.NetConnection | null = null;
   private wantAgent: WantAgent | null = null;
+  private debounceTimer: number = -1;
 
   private constructor() {
   }
@@ -114,6 +115,11 @@ export class KdeBackgroundService {
       this.deviceSubId = -1;
     }
 
+    if (this.debounceTimer !== -1) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = -1;
+    }
+
     if (this.netConn) {
       try {
         this.netConn.unregister((_err: BusinessError) => {});
@@ -133,20 +139,35 @@ export class KdeBackgroundService {
     this.context = null;
   }
 
-  /** Called when device list changes or network changes. */
+  /** Called when device list changes. Debounced to avoid flicker during state transitions. */
   public updateNotification(): void {
     if (!this.running || !this.context) {
       return;
     }
+    // Debounce: only apply after 300ms of no further changes
+    if (this.debounceTimer !== -1) {
+      clearTimeout(this.debounceTimer);
+    }
+    this.debounceTimer = setTimeout(() => {
+      this.debounceTimer = -1;
+      this.doUpdateNotification();
+    }, 300);
+  }
+
+  private doUpdateNotification(): void {
+    if (!this.context) {
+      return;
+    }
     const devices: DeviceListItem[] = AppSession.getInstance().getLastDevices();
-    // Filter to reachable + paired devices (matches Android isReachable && isPaired)
-    const connected: string[] = [];
+    const names: string[] = [];
+    const ids: string[] = [];
     for (const d of devices) {
-      if (d.status === 'connected') {
-        connected.push(d.deviceName);
+      if (d.trusted && d.online) {
+        names.push(d.deviceName);
+        ids.push(d.deviceId);
       }
     }
-    AppNotifier.getInstance().notifyPersistent(connected);
+    AppNotifier.getInstance().notifyPersistent(names, ids);
   }
 
   /** Trigger a network re-scan (matches Android onNetworkChange). */

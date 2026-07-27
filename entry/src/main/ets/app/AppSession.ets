@@ -110,6 +110,26 @@ export class AppSession {
     }
   }
 
+  /** Navigate to device detail from notification action. */
+  public openClipboardSendFor(deviceId: string): void {
+    if (this.uiContext) {
+      this.uiContext.getRouter().pushUrl({
+        url: 'pages/DeviceDetail',
+        params: { deviceId: deviceId, action: 'clipboard' }
+      });
+    }
+  }
+
+  /** Navigate to device detail and trigger file picker. */
+  public openFileSendFor(deviceId: string): void {
+    if (this.uiContext) {
+      this.uiContext.getRouter().pushUrl({
+        url: 'pages/DeviceDetail',
+        params: { deviceId: deviceId, action: 'sendFile' }
+      });
+    }
+  }
+
   public subscribeDevices(cb: (items: DeviceListItem[]) => void): number {
     let id = this.nextListenerId++;
     this.deviceListeners.set(id, cb);
