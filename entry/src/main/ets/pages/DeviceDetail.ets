@@ -42,8 +42,6 @@ struct DeviceDetail {
   @State menuOpacity: number = 0;
   // Dialogs
   @State showEncryptionDialog: boolean = false;
-  @State showClipboardDialog: boolean = false;
-  @State clipboardInput: string = '';
   // File send
   @State fileSending: boolean = false;
   @State fileProgress: number = 0;
@@ -252,38 +250,30 @@ struct DeviceDetail {
 
   private trySendClipboard(): void {
     this.closeMenu();
-    // Try reading system clipboard directly (matching Android behaviour).
-    // Falls back to the text-input dialog if permission is denied or clipboard is empty.
+    // Read system clipboard and send directly (matches Android).
+    // Silently fail if clipboard is empty or unreadable.
     try {
       let sysPasteboard = pasteboard.getSystemPasteboard();
       sysPasteboard.getData((err: Error, data: pasteboard.PasteData) => {
-        if (!err && data) {
-          let text = data.getPrimaryText();
-          if (text && text.trim().length > 0) {
-            this.session.getService().sendClipboardText(text.trim());
-            this.showToast($r('app.string.clipboard_send_toast'));
-            return;
-          }
+        if (err) {
+          console.warn('[DeviceDetail] clipboard read error:', err.message);
+          return;
         }
-        // Clipboard empty or permission denied — show manual input dialog
-        this.clipboardInput = '';
-        this.showClipboardDialog = true;
+        if (!data) {
+          console.warn('[DeviceDetail] clipboard empty');
+          return;
+        }
+        let text = data.getPrimaryText();
+        if (!text || text.trim().length === 0) {
+          console.warn('[DeviceDetail] clipboard has no text');
+          return;
+        }
+        this.session.getService().sendClipboardText(text.trim());
+        this.showToast($r('app.string.clipboard_send_toast'));
       });
     } catch (_e) {
-      // pasteboard unavailable — show manual input dialog
-      this.clipboardInput = '';
-      this.showClipboardDialog = true;
+      console.warn('[DeviceDetail] pasteboard unavailable');
     }
-  }
-
-  private onSendClipboard(): void {
-    if (this.clipboardInput.trim().length === 0) {
-      return;
-    }
-    this.closeMenu();
-    this.showClipboardDialog = false;
-    this.session.getService().sendClipboardText(this.clipboardInput.trim());
-    this.showToast($r('app.string.clipboard_send_toast'));
   }
 
   private showToast(msg: ResourceStr): void {
@@ -823,75 +813,6 @@ struct DeviceDetail {
 
   // ── Clipboard send dialog ────────────────────────────────
 
-  @Builder
-  ClipboardDialog() {
-    Column()
-      .width('100%')
-      .height('100%')
-      .backgroundColor('#33000000')
-      .onClick(() => {
-        this.showClipboardDialog = false;
-      })
-
-    Column() {
-      Text($r('app.string.clipboard_dialog_title'))
-        .fontSize(18)
-        .fontWeight(FontWeight.Medium)
-        .fontColor(UiTheme.onSurface)
-        .width('100%')
-        .margin({ bottom: 16 })
-
-      TextInput({ text: this.clipboardInput, placeholder: $r('app.string.clipboard_input_hint') })
-        .width('100%')
-        .height(120)
-        .fontSize(15)
-        .fontColor(UiTheme.onSurface)
-        .placeholderColor(UiTheme.textMuted)
-        .backgroundColor(UiTheme.surface)
-        .borderRadius(8)
-        .border({ width: 1, color: UiTheme.outline })
-        .padding(12)
-        .maxLength(10000)
-        .onChange((value: string) => {
-          this.clipboardInput = value;
-        })
-
-      Row({ space: 8 }) {
-        Button($r('app.string.settings_cancel'))
-          .layoutWeight(1)
-          .height(44)
-          .fontSize(15)
-          .fontColor(UiTheme.onSurface)
-          .backgroundColor(UiTheme.surfaceVariant)
-          .borderRadius(UiTheme.radiusButton)
-          .onClick(() => {
-            this.showClipboardDialog = false;
-          })
-        Button($r('app.string.clipboard_send_button'))
-          .layoutWeight(1)
-          .height(44)
-          .fontSize(15)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(Color.White)
-          .backgroundColor(UiTheme.primary)
-          .borderRadius(UiTheme.radiusButton)
-          .enabled(this.clipboardInput.trim().length > 0)
-          .onClick(() => {
-            this.onSendClipboard();
-          })
-      }
-      .width('100%')
-      .margin({ top: 16 })
-    }
-    .width('90%')
-    .constraintSize({ maxWidth: 360 })
-    .padding(24)
-    .backgroundColor(UiTheme.cardBg)
-    .borderRadius(UiTheme.radiusCard)
-    .shadow({ radius: 16, color: '#40000000', offsetX: 0, offsetY: 8 })
-    .alignItems(HorizontalAlign.Start)
-  }
-
   // ── Root ─────────────────────────────────────────────────
 
   build() {
@@ -954,10 +875,6 @@ struct DeviceDetail {
 
       if (this.showEncryptionDialog) {
         this.EncryptionDialog()
-      }
-
-      if (this.showClipboardDialog) {
-        this.ClipboardDialog()
       }
 
       if (this.toastVisible) {
