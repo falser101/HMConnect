@@ -1,6 +1,5 @@
 import { common } from '@kit.AbilityKit';
 import pasteboard from '@ohos.pasteboard';
-import { PasteButtonOnClickResult } from '@kit.ArkUI';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { AppSession } from '../app/AppSession';
 import { DeviceListItem, KdeStatus, ConnectionState, FileSendInfo } from '../service/KdeTypes';
@@ -817,8 +816,8 @@ struct DeviceDetail {
 
       PasteButton()
         .padding({ top: 12, bottom: 12, left: 24, right: 24 })
-        .onClick((event: ClickEvent, result: PasteButtonOnClickResult) => {
-          if (PasteButtonOnClickResult.SUCCESS === result) {
+        .onClick((event: ClickEvent, result: number) => {
+          if (result === 0) { // PasteButtonOnClickResult.SUCCESS = 0
             pasteboard.getSystemPasteboard().getData((err: Error, pasteData: pasteboard.PasteData) => {
               if (err) {
                 console.error('[DeviceDetail] paste error:', err.message);
