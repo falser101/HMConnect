@@ -345,19 +345,23 @@ export class KdeClient {
       }).catch(() => {});
     }
 
-    // Also try system media control — preferred: own controller, fallback: key event
+    // Also try system media control — preferred: own controller
     if (this.mprisController) {
       // Use our own controller to send commands to the system
-      const cmdMap: Record<string, string> = {
+      const cmdMap: Record<string, avSession.AVControlCommandType> = {
         'Play': 'play', 'Pause': 'pause', 'PlayPause': 'play',
         'Next': 'playNext', 'Previous': 'playPrevious'
       };
-      const cmd: string | undefined = cmdMap[action];
+      const cmd: avSession.AVControlCommandType | undefined = cmdMap[action];
       if (cmd) {
+        console.info('[KDE-MVP] sending controller command:', cmd);
         this.mprisController.sendControlCommand({ command: cmd })
           .then(() => console.info('[KDE-MVP] controller command OK:', cmd))
-          .catch((e: BusinessError) => console.warn('[KDE-MVP] controller command failed:', e.code));
+          .catch((e: BusinessError) =>
+            console.warn('[KDE-MVP] controller command FAILED:', e.code, e.message));
       }
+    } else {
+      console.warn('[KDE-MVP] no controller, skipping system command');
     }
   }
 
@@ -386,46 +390,53 @@ export class KdeClient {
       return;
     }
     try {
+      console.info('[KDE-MVP] AVSession creating…');
       this.mprisSession = await avSession.createAVSession(ctx, 'HMConnectMpris', 'audio');
+      console.info('[KDE-MVP] AVSession created, id:', this.mprisSession.sessionId);
 
       // Register commands FIRST (docs: register before activate)
       this.mprisSession.on('play', () => {
-        console.info('[KDE-MVP] AVSession local play');
+        console.info('[KDE-MVP] AVSession ★ play');
         this.localPlaying = true;
         this.sendLocalMprisStatus();
       });
       this.mprisSession.on('pause', () => {
-        console.info('[KDE-MVP] AVSession local pause');
+        console.info('[KDE-MVP] AVSession ★ pause');
         this.localPlaying = false;
         this.sendLocalMprisStatus();
       });
       this.mprisSession.on('stop', () => {
-        console.info('[KDE-MVP] AVSession local stop');
+        console.info('[KDE-MVP] AVSession ★ stop');
         this.localPlaying = false;
         this.sendLocalMprisStatus();
       });
       this.mprisSession.on('playNext', () => {
-        console.info('[KDE-MVP] AVSession local playNext');
+        console.info('[KDE-MVP] AVSession ★ playNext');
         this.sendLocalMprisStatus();
       });
       this.mprisSession.on('playPrevious', () => {
-        console.info('[KDE-MVP] AVSession local playPrevious');
+        console.info('[KDE-MVP] AVSession ★ playPrevious');
         this.sendLocalMprisStatus();
       });
+      console.info('[KDE-MVP] AVSession commands registered');
 
       await this.mprisSession.setAVMetadata({
         assetId: 'hmconnect',
         title: 'HMConnect',
         artist: 'KDE Connect'
       });
+      console.info('[KDE-MVP] AVSession metadata set');
 
       // Activate + get controller
       await this.mprisSession.activate();
+      console.info('[KDE-MVP] AVSession activated, getting controller…');
       this.mprisController = await this.mprisSession.getController();
+      console.info('[KDE-MVP] AVSession controller obtained');
 
       await this.mprisSession.setAVPlaybackState({
         state: avSession.PlaybackState.PLAYBACK_STATE_STOP
       });
+      console.info('[KDE-MVP] AVSession initial state set to STOP');
       console.info('[KDE-MVP] MPRIS receiver AVSession activated');
     } catch (e) {
       console.warn('[KDE-MVP] setupMprisReceiver failed:', JSON.stringify(e));
