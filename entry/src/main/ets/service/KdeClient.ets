@@ -360,8 +360,27 @@ export class KdeClient {
           .catch((e: BusinessError) =>
             console.warn('[KDE-MVP] controller command FAILED:', e.code, e.message));
       }
-    } else {
-      console.warn('[KDE-MVP] no controller, skipping system command');
+    }
+
+    // Also try system-level media key (may actually control active media)
+    try {
+      const keyMap: Record<string, string> = {
+        'Play': 'playPause', 'Pause': 'playPause', 'PlayPause': 'playPause',
+        'Next': 'next', 'Previous': 'previous'
+      };
+      const key: string | undefined = keyMap[action];
+      if (key) {
+        console.info('[KDE-MVP] sending system AV key:', key);
+        avSession.sendSystemAVKeyEvent({ keyAction: 1, keyCode: key }, (err: BusinessError) => {
+          if (err) {
+            console.warn('[KDE-MVP] sendSystemAVKeyEvent FAILED:', err.code, err.message);
+          } else {
+            console.info('[KDE-MVP] sendSystemAVKeyEvent OK:', key);
+          }
+        });
+      }
+    } catch (_e) {
+      console.warn('[KDE-MVP] sendSystemAVKeyEvent threw');
     }
   }
 
