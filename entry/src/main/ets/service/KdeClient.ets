@@ -364,14 +364,11 @@ export class KdeClient {
   /** Discover system audio sessions and send play/pause/etc to the first one. */
   private async sendToActiveAudioSession(action: string): Promise<void> {
     try {
-      const descriptors = await avSession.getAllSessions();
-      if (!descriptors || descriptors.length === 0) { return; }
-      let targetId: string = '';
-      for (const d of descriptors) {
-        if (d.sessionType === 'audio') { targetId = d.sessionId; break; }
-      }
-      if (targetId.length === 0) { return; }
-      const controller = new avSession.AVSessionController(targetId);
+      const sessions = await avSession.getAllSessions();
+      if (!sessions || sessions.length === 0) { return; }
+      const audioSession = sessions.find((item) => item.type === 'audio');
+      if (!audioSession) { return; }
+      const controller = await avSession.createController(audioSession.sessionId);
       const cmdMap: Record<string, avSession.AVControlCommandType> = {
         'Play': 'play', 'Pause': 'pause', 'PlayPause': 'play',
         'Next': 'playNext', 'Previous': 'playPrevious'
