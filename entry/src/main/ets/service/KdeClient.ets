@@ -3,6 +3,8 @@ import deviceInfo from '@ohos.deviceInfo';
 import pasteboard from '@ohos.pasteboard';
 import { fileIo, picker, fileUri } from '@kit.CoreFileKit';
 import { common } from '@kit.AbilityKit';
+import { avSession } from '@kit.AVSessionKit';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { AppNotifier } from '../common/AppNotifier';
 import {
   KdeDevice,
@@ -317,9 +319,54 @@ export class KdeClient {
     }
   }
 
-  /** Execute media control on local device (stateless, no AVSession permission needed). */
+  /** Execute media control via system AV key events (no special permission needed). */
   private handleMprisAction(action: string): void {
     console.info('[KDE-MVP] MPRIS receiver action:', action);
+    try {
+      // Map to system key events
+      const ev: avSession.AVKeyEvent = { keyAction: 1 }; // KEY_ACTION_DOWN
+      switch (action) {
+        case 'Play':
+        case 'Pause':
+        case 'PlayPause':
+          ev.keyCode = 'playPause';
+          break;
+        case 'Next':
+          ev.keyCode = 'next';
+          break;
+        case 'Previous':
+          ev.keyCode = 'previous';
+          break;
+        case 'Stop':
+          ev.keyCode = 'pause';
+          break;
+        default:
+          return;
+      }
+      avSession.sendSystemAVKeyEvent(ev, (err: BusinessError) => {
+        if (err) {
+          console.warn('[KDE-MVP] sendSystemAVKeyEvent failed:', err.code, err.message);
+          // Fallback: update local state
+          this.fallbackHandleAction(action);
+        } else {
+          console.info('[KDE-MVP] sendSystemAVKeyEvent OK:', action);
+          // Toggle local state for status reporting
+          if (action === 'PlayPause') {
+            this.localPlaying = !this.localPlaying;
+          } else if (action === 'Play') {
+            this.localPlaying = true;
+          } else {
+            this.localPlaying = false;
+          }
+          this.sendLocalMprisStatus();
+        }
+      });
+    } catch (_e) {
+      this.fallbackHandleAction(action);
+    }
+  }
+
+  private fallbackHandleAction(action: string): void {
     switch (action) {
       case 'Play':
         this.localPlaying = true;
@@ -330,11 +377,8 @@ export class KdeClient {
       case 'PlayPause':
         this.localPlaying = !this.localPlaying;
         break;
-      case 'Next':
-      case 'Previous':
-      case 'Stop':
+      default:
         this.localPlaying = false;
-        break;
     }
     this.sendLocalMprisStatus();
   }
@@ -840,10 +884,16 @@ export class KdeClient {
     return serializePacket('kdeconnect.identity', body);
   }
 
-  private handleIncomingConnection(client: socket.TCPSocketConnection): void {
+  private async handleIncomingConnection(client: socket.TCPSocketConnection): Promise<void> {
     // Outbound in progress → accept reverse connection from same peer instead
     if (this.outboundActive) {
-      const remoteAddr: string = client.remoteAddress?.address ?? '';
+      let remoteAddr: string = '';
+      try {
+        const remoteAddrInfo = await client.getRemoteAddress();
+        remoteAddr = remoteAddrInfo.address ?? '';
+      } catch (e) {
+        console.warn('[KDE-MVP] Failed to get remote address:', JSON.stringify(e));
+      }
       if (remoteAddr.length > 0 && remoteAddr === this.outboundTargetIp) {
         console.info('[KDE-MVP] Reverse connect while outbound — accept reverse, cancel outbound');
         this.cleanOutboundState();
