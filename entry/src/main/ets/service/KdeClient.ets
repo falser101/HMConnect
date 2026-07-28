@@ -3,6 +3,7 @@ import deviceInfo from '@ohos.deviceInfo';
 import pasteboard from '@ohos.pasteboard';
 import { fileIo, picker, fileUri } from '@kit.CoreFileKit';
 import { common } from '@kit.AbilityKit';
+import { avSession } from '@kit.AVSessionKit';
 import { AppNotifier } from '../common/AppNotifier';
 import {
   KdeDevice,
@@ -271,6 +272,138 @@ export class KdeClient {
     }
     const cmd: Record<string, Object> = { 'player': p.player, 'Seek': offset };
     this.sendMprisCommand(cmd);
+  }
+
+  /** Handle incoming mpris.request (remote controls our media). */
+  private handleMprisRequest(body: object): void {
+    const b = body as Record<string, Object>;
+
+    // Request player list
+    if (b['requestPlayerList'] === true) {
+      const resp: Record<string, Object> = {
+        'playerList': ['HMConnect']
+      };
+      this.sendMprisStatus(resp);
+      return;
+    }
+
+    // Send metadata for a player
+    if (b['requestNowPlaying'] === true) {
+      this.sendLocalMprisStatus();
+      return;
+    }
+
+    // Volume control
+    if (typeof b['setVolume'] === 'number') {
+      const vol: number = b['setVolume'] as number;
+      console.info('[KDE-MVP] MPRIS receiver setVolume:', vol);
+      this.sendLocalMprisStatus();
+      return;
+    }
+
+    // Seek
+    if (typeof b['SetPosition'] === 'number') {
+      console.info('[KDE-MVP] MPRIS receiver SetPosition:', b['SetPosition']);
+      return;
+    }
+
+    // Action
+    const action: string = typeof b['action'] === 'string' ? b['action'] as string : '';
+    if (action.length > 0) {
+      this.handleMprisAction(action);
+    }
+  }
+
+  /** Execute a media control action using AVSession. */
+  private async handleMprisAction(action: string): Promise<void> {
+    console.info('[KDE-MVP] MPRIS receiver action:', action);
+    try {
+      // Get all active AVSessions and send the command to the first one
+      const descriptor = await avSession.getAllSessionDescriptors();
+      if (!descriptor || descriptor.length === 0) {
+        console.warn('[KDE-MVP] MPRIS receiver: no active sessions');
+        return;
+      }
+      // Use the first audio session
+      const session = descriptor[0];
+      const controller = await avSession.createController(session.sessionId);
+
+      let cmd: string;
+      switch (action) {
+        case 'PlayPause':
+          // Toggle: if playing, pause; else play
+          const state = await controller.getAVPlaybackState();
+          cmd = (state.state === avSession.PlaybackState.PLAYBACK_STATE_PLAY) ? 'pause' : 'play';
+          break;
+        case 'Play':
+          cmd = 'play';
+          break;
+        case 'Pause':
+          cmd = 'pause';
+          break;
+        case 'Next':
+          cmd = 'playNext';
+          break;
+        case 'Previous':
+          cmd = 'playPrevious';
+          break;
+        case 'Stop':
+          cmd = 'stop';
+          break;
+        default:
+          console.warn('[KDE-MVP] MPRIS unknown action:', action);
+          return;
+      }
+
+      await controller.sendControlCommand({ command: cmd });
+      console.info('[KDE-MVP] MPRIS receiver sent command:', cmd);
+      // Send updated status after a brief delay
+      setTimeout(() => { this.sendLocalMprisStatus(); }, 300);
+    } catch (e) {
+      console.error('[KDE-MVP] MPRIS receiver error:', JSON.stringify(e));
+    }
+  }
+
+  /** Send local playback status to remote via mpris packet. */
+  private async sendLocalMprisStatus(): Promise<void> {
+    if (!this.isTlsLive()) {
+      return;
+    }
+    try {
+      const descriptor = await avSession.getAllSessionDescriptors();
+      if (!descriptor || descriptor.length === 0) {
+        return;
+      }
+      const session = descriptor[0];
+      const controller = await avSession.createController(session.sessionId);
+      const meta: avSession.AVMetadata = await controller.getAVMetadata();
+      const state = await controller.getAVPlaybackState();
+
+      const isPlaying: boolean = (state.state === avSession.PlaybackState.PLAYBACK_STATE_PLAY);
+      const status: Record<string, Object> = {
+        'player': 'HMConnect',
+        'title': meta.title ?? '',
+        'artist': meta.artist ?? '',
+        'album': meta.album ?? '',
+        'isPlaying': isPlaying,
+        'canPlay': true,
+        'canPause': true,
+        'canGoNext': true,
+        'canGoPrevious': true,
+        'canSeek': true,
+        'volume': 50,
+        'length': -1,
+        'pos': 0
+      };
+      this.sendMprisStatus(status);
+    } catch (e) {
+      // Non-critical; remote just won't see our status
+    }
+  }
+
+  private sendMprisStatus(status: Record<string, Object>): void {
+    const json: string = serializePacket(PACKET_TYPE_MPRIS, status);
+    this.sendTls(json, () => {});
   }
 
   private emit(state: ConnectionState, message: string, extra?: Partial<KdeStatus>): void {
@@ -1189,6 +1322,11 @@ export class KdeClient {
 
     if (type === PACKET_TYPE_MPRIS) {
       this.handleMprisPacket(body);
+      return;
+    }
+
+    if (type === PACKET_TYPE_MPRIS_REQUEST) {
+      this.handleMprisRequest(body);
       return;
     }
 

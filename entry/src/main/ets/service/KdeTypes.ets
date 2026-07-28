@@ -31,7 +31,8 @@ export const INCOMING_CAPABILITIES: string[] = [
   'kdeconnect.battery',
   'kdeconnect.findmyphone.request',
   'kdeconnect.share.request',
-  'kdeconnect.mpris'
+  'kdeconnect.mpris',
+  'kdeconnect.mpris.request'
 ];
 
 /** Packets this device can send. */
@@ -42,6 +43,7 @@ export const OUTGOING_CAPABILITIES: string[] = [
   'kdeconnect.ping',
   'kdeconnect.battery',
   'kdeconnect.share.request',
+  'kdeconnect.mpris',
   'kdeconnect.mpris.request'
 ];
 
