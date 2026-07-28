@@ -345,42 +345,44 @@ export class KdeClient {
       }).catch(() => {});
     }
 
-    // Also try system media control — preferred: own controller
-    if (this.mprisController) {
-      // Use our own controller to send commands to the system
+    // 1) Send system media key (controls active media)
+    try {
+      const keyMap: Record<string, string> = { 'Play': 'playPause', 'Pause': 'playPause', 'PlayPause': 'playPause', 'Next': 'next', 'Previous': 'previous' };
+      const key: string | undefined = keyMap[action];
+      if (key) {
+        avSession.sendSystemAVKeyEvent({ keyAction: 1, keyCode: key }, (err: BusinessError) => {
+          if (err) console.warn('[KDE-MVP] AVKey FAILED:', err.code, err.message);
+          else console.info('[KDE-MVP] AVKey OK:', key);
+        });
+      }
+    } catch (_e) {}
+
+    // 2) Try discovery-based control of other audio sessions
+    this.sendToActiveAudioSession(action);
+  }
+
+  /** Discover system audio sessions and send play/pause/etc to the first one. */
+  private async sendToActiveAudioSession(action: string): Promise<void> {
+    try {
+      const descriptors = await avSession.getAllSessions();
+      if (!descriptors || descriptors.length === 0) { return; }
+      let targetId: string = '';
+      for (const d of descriptors) {
+        if (d.sessionType === 'audio') { targetId = d.sessionId; break; }
+      }
+      if (targetId.length === 0) { return; }
+      const controller = new avSession.AVSessionController(targetId);
       const cmdMap: Record<string, avSession.AVControlCommandType> = {
         'Play': 'play', 'Pause': 'pause', 'PlayPause': 'play',
         'Next': 'playNext', 'Previous': 'playPrevious'
       };
       const cmd: avSession.AVControlCommandType | undefined = cmdMap[action];
       if (cmd) {
-        console.info('[KDE-MVP] sending controller command:', cmd);
-        this.mprisController.sendControlCommand({ command: cmd })
-          .then(() => console.info('[KDE-MVP] controller command OK:', cmd))
-          .catch((e: BusinessError) =>
-            console.warn('[KDE-MVP] controller command FAILED:', e.code, e.message));
+        await controller.sendControlCommand({ command: cmd });
+        console.info('[KDE-MVP] real audio session command OK:', cmd);
       }
-    }
-
-    // Also try system-level media key (may actually control active media)
-    try {
-      const keyMap: Record<string, string> = {
-        'Play': 'playPause', 'Pause': 'playPause', 'PlayPause': 'playPause',
-        'Next': 'next', 'Previous': 'previous'
-      };
-      const key: string | undefined = keyMap[action];
-      if (key) {
-        console.info('[KDE-MVP] sending system AV key:', key);
-        avSession.sendSystemAVKeyEvent({ keyAction: 1, keyCode: key }, (err: BusinessError) => {
-          if (err) {
-            console.warn('[KDE-MVP] sendSystemAVKeyEvent FAILED:', err.code, err.message);
-          } else {
-            console.info('[KDE-MVP] sendSystemAVKeyEvent OK:', key);
-          }
-        });
-      }
-    } catch (_e) {
-      console.warn('[KDE-MVP] sendSystemAVKeyEvent threw');
+    } catch (e) {
+      console.warn('[KDE-MVP] getAllSessions failed:', JSON.stringify(e));
     }
   }
 
