@@ -433,9 +433,6 @@ export class KdeClient {
       });
       console.info('[KDE-MVP] AVSession initial state set to STOP');
       console.info('[KDE-MVP] MPRIS receiver AVSession activated');
-
-      // Debug: try to discover what APIs are available for session listing
-      this.debugDiscoverSessions();
     } catch (e) {
       console.warn('[KDE-MVP] setupMprisReceiver failed:', JSON.stringify(e));
       this.mprisSession = null;
@@ -449,35 +446,6 @@ export class KdeClient {
     if (s) {
       try { s.deactivate(); } catch (_e) {}
       try { s.destroy(); } catch (_e) {}
-    }
-  }
-
-  /** Debug: discover active audio sessions using available APIs. */
-  private debugDiscoverSessions(): void {
-    // Try known API names one by one — whichever compiles and runs
-    try {
-      // Method 1: avSession.getAVSession('audio')
-      const gav: Function = (avSession as Object)['getAVSession'] as Function;
-      if (gav !== undefined) {
-        gav.call(avSession, 'audio').then((r: Object) => {
-          const arr: Object[] = r as Object[];
-          console.info('[KDE-MVP] getAVSession OK, count:', arr.length);
-        }).catch((e: Error) => console.warn('[KDE-MVP] getAVSession failed:', e.message));
-      }
-    } catch (e) {
-      console.warn('[KDE-MVP] getAVSession not found');
-    }
-
-    try {
-      const gasd: Function = (avSession as Object)['getAllSessionDescriptors'] as Function;
-      if (gasd !== undefined) {
-        gasd.call(avSession).then((r: Object) => {
-          const arr: Object[] = r as Object[];
-          console.info('[KDE-MVP] getAllSessionDescriptors OK, count:', arr.length);
-        }).catch((e: Error) => console.warn('[KDE-MVP] getAllSessionDescriptors failed:', e.message));
-      }
-    } catch (e) {
-      console.warn('[KDE-MVP] getAllSessionDescriptors not found');
     }
   }
 
