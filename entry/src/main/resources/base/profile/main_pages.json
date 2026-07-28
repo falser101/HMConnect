@@ -4,6 +4,7 @@
     "pages/DeviceDetail",
     "pages/Settings",
     "pages/About",
-    "pages/FindMyPhone"
+    "pages/FindMyPhone",
+    "pages/MprisControl"
   ]
 }

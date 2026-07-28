@@ -292,6 +292,10 @@ export class KdeService {
     return this.client;
   }
 
+  public getClientForDevice(_deviceId: string): KdeClient {
+    return this.client;
+  }
+
   /** User-initiated pair request. */
   public requestPairing(): void {
     this.client.requestPairing();

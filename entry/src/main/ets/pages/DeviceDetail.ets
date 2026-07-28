@@ -3,7 +3,7 @@ import pasteboard from '@ohos.pasteboard';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { AppSession } from '../app/AppSession';
 import { AppNotifier } from '../common/AppNotifier';
-import { DeviceListItem, KdeStatus, ConnectionState, FileSendInfo, MprisPlayerState } from '../service/KdeTypes';
+import { DeviceListItem, KdeStatus, ConnectionState, FileSendInfo } from '../service/KdeTypes';
 import { BatteryHelper } from '../common/BatteryHelper';
 import { goBack, hostContext, routeParams } from '../common/NavUtil';
 import { UiTheme } from '../common/ui/UiTheme';
@@ -44,9 +44,6 @@ struct DeviceDetail {
   // Dialogs
   @State showEncryptionDialog: boolean = false;
   @State showPasteOverlay: boolean = false;
-  @State showMprisOverlay: boolean = false;
-  @State mprisPlayer: MprisPlayerState | null = null;
-  private mprisSubId: number = -1;
   // File send
   @State fileSending: boolean = false;
   @State fileProgress: number = 0;
@@ -193,17 +190,13 @@ struct DeviceDetail {
   }
 
   private openMpris(): void {
-    // Subscribe to MPRIS updates
-    if (this.mprisSubId < 0) {
-      this.session.getService().getClient().setMprisChangeListener((p: MprisPlayerState | null) => {
-        this.mprisPlayer = p;
+    const ctx = this.getUIContext();
+    if (ctx && this.item) {
+      ctx.getRouter().pushUrl({
+        url: 'pages/MprisControl',
+        params: { deviceId: this.item.deviceId }
       });
     }
-    this.showMprisOverlay = true;
-  }
-
-  private closeMpris(): void {
-    this.showMprisOverlay = false;
   }
 
   private async onSendFiles(): Promise<void> {
@@ -878,83 +871,6 @@ struct DeviceDetail {
 
   // ── Root ─────────────────────────────────────────────────
 
-  @Builder
-  MprisOverlay() {
-    Column()
-      .width('100%')
-      .height('100%')
-      .backgroundColor('#33000000')
-      .onClick(() => {
-        this.showMprisOverlay = false;
-      })
-
-    Column() {
-      // Title
-      Text('多媒体控制')
-        .fontSize(18)
-        .fontWeight(FontWeight.Medium)
-        .fontColor(UiTheme.onSurface)
-        .width('100%')
-        .margin({ bottom: 16 })
-
-      if (this.mprisPlayer && this.mprisPlayer.title.length > 0) {
-        Text(this.mprisPlayer.title)
-          .fontSize(16)
-          .fontColor(UiTheme.onSurface)
-          .maxLines(2)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .width('100%')
-        Text(this.mprisPlayer.artist)
-          .fontSize(14)
-          .fontColor(UiTheme.textMuted)
-          .width('100%')
-          .margin({ top: 4, bottom: 20 })
-      } else {
-        Text('等待播放信息…')
-          .fontSize(14)
-          .fontColor(UiTheme.textMuted)
-          .width('100%')
-          .margin({ bottom: 20 })
-      }
-
-      // Controls
-      Row({ space: 12 }) {
-        Button('⏮')
-          .width(48).height(48)
-          .fontSize(20)
-          .borderRadius(24)
-          .onClick(() => {
-            this.session.getService().getClient().mprisPrevious();
-          })
-        Button(this.mprisPlayer?.isPlaying ? '⏸' : '▶️')
-          .width(56).height(56)
-          .fontSize(24)
-          .borderRadius(28)
-          .onClick(() => {
-            this.session.getService().getClient().mprisPlayPause();
-          })
-        Button('⏭')
-          .width(48).height(48)
-          .fontSize(20)
-          .borderRadius(24)
-          .onClick(() => {
-            this.session.getService().getClient().mprisNext();
-          })
-      }
-      .width('100%')
-      .justifyContent(FlexAlign.Center)
-    }
-    .width('90%')
-    .constraintSize({ maxWidth: 360 })
-    .padding(24)
-    .backgroundColor(UiTheme.cardBg)
-    .borderRadius(UiTheme.radiusCard)
-    .shadow({ radius: 16, color: '#40000000', offsetX: 0, offsetY: 8 })
-    .alignItems(HorizontalAlign.Center)
-  }
-
-  // ── Root ─────────────────────────────────────────────────
-
   build() {
     Stack() {
       Column() {
@@ -1019,10 +935,6 @@ struct DeviceDetail {
 
       if (this.showPasteOverlay) {
         this.PasteOverlay()
-      }
-
-      if (this.showMprisOverlay) {
-        this.MprisOverlay()
       }
 
       if (this.toastVisible) {
