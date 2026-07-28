@@ -327,11 +327,47 @@ export class KdeClient {
     }
   }
 
-  /** Execute media control via local state update. */
+  /** Execute media control via local state + AVSession update. */
   private handleMprisAction(action: string): void {
     console.info('[KDE-MVP] MPRIS receiver action:', action);
-    // Directly update local state since sendSystemAVKeyEvent API is not available
+
+    // Update local state
     this.fallbackHandleAction(action);
+
+    // Sync AVSession state (so system notification widget shows correct status)
+    if (this.mprisSession) {
+      const state = this.localPlaying
+        ? avSession.PlaybackState.PLAYBACK_STATE_PLAY
+        : avSession.PlaybackState.PLAYBACK_STATE_PAUSE;
+      this.mprisSession.setAVPlaybackState({
+        state: state
+      }).catch(() => {});
+    }
+
+    // Also try system-level media key (may work on some devices)
+    try {
+      const ev: avSession.AVKeyEvent = { keyAction: 1 };
+      switch (action) {
+        case 'Play':
+        case 'Pause':
+        case 'PlayPause':
+          ev.keyCode = 'playPause';
+          break;
+        case 'Next':
+          ev.keyCode = 'next';
+          break;
+        case 'Previous':
+          ev.keyCode = 'previous';
+          break;
+      }
+      avSession.sendSystemAVKeyEvent(ev, (err: BusinessError) => {
+        if (!err) {
+          console.info('[KDE-MVP] sendSystemAVKeyEvent OK:', action);
+        }
+      });
+    } catch (_e) {
+      // Non-critical
+    }
   }
 
   private fallbackHandleAction(action: string): void {
@@ -379,6 +415,19 @@ export class KdeClient {
         console.info('[KDE-MVP] AVSession local stop');
         this.localPlaying = false;
         this.sendLocalMprisStatus();
+      });
+      this.mprisSession.on('playNext', () => {
+        console.info('[KDE-MVP] AVSession local playNext');
+        this.sendLocalMprisStatus();
+      });
+      this.mprisSession.on('playPrevious', () => {
+        console.info('[KDE-MVP] AVSession local playPrevious');
+        this.sendLocalMprisStatus();
+      });
+      await this.mprisSession.setAVMetadata({
+        assetId: 'hmconnect',
+        title: 'HMConnect',
+        artist: 'KDE Connect'
       });
       console.info('[KDE-MVP] MPRIS receiver AVSession activated');
     } catch (e) {
