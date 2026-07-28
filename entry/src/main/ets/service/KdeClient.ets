@@ -3,6 +3,7 @@ import deviceInfo from '@ohos.deviceInfo';
 import pasteboard from '@ohos.pasteboard';
 import { fileIo, picker, fileUri } from '@kit.CoreFileKit';
 import { common } from '@kit.AbilityKit';
+import { AppNotifier } from '../common/AppNotifier';
 import {
   KdeDevice,
   KdeIdentityBody,
@@ -1016,19 +1017,13 @@ export class KdeClient {
             peerDeviceId: this.peerDevice?.deviceId
           });
         } else {
-          // Peer requested pairing → accept by sending pair:true back (Android: acceptPairing)
-          if (this.isTlsLive()) {
-            const accept: string = serializePacket('kdeconnect.pair', { pair: true } as KdePairBody);
-            this.sendTls(accept, () => {});
-          } else {
-            // TLS not live yet — queue response, connect callback will flush
-            this.pendingPairAccept = true;
-            console.info('[KDE-MVP] pair-accept queued (TLS not live yet)');
-          }
-          this.emit('paired', '配对成功！可同步剪贴板', {
-            peerName: this.peerDevice?.deviceName,
-            peerDeviceId: this.peerDevice?.deviceId
-          });
+          // Peer requested pairing → show notification (Android: callback.incomingPairRequest)
+          console.info('[KDE-MVP] Peer requested pairing, showing notification');
+          AppNotifier.getInstance().notifyPairRequest(
+            this.peerDevice?.deviceName ?? '未知设备',
+            this.peerDevice?.deviceId ?? ''
+          );
+          return;
         }
         // Unpair / reject — match Android PairingHandler.packetReceived(pair=false)
         const wasPaired: boolean = this.paired;
@@ -1464,6 +1459,43 @@ export class KdeClient {
       return;
     }
     this.sendClipboard(text);
+  }
+
+  /** Accept incoming pair request (from notification action). */
+  public acceptPairing(): void {
+    if (!this.isTlsLive()) {
+      console.warn('[KDE-MVP] acceptPairing: TLS not live');
+      return;
+    }
+    const accept: string = serializePacket('kdeconnect.pair', { pair: true } as KdePairBody);
+    this.sendTls(accept, () => {});
+    this.paired = true;
+    this.pairRequestSentForGen = -1;
+    if (this.peerDevice) {
+      this.trustedDeviceIds.add(this.peerDevice.deviceId);
+      this.persistTrust(this.peerDevice).catch((e: Error) => {
+        console.error('[KDE-MVP] persistTrust failed:', e.message);
+      });
+    }
+    this.notifySessionChange();
+    this.emit('paired', '配对成功！可同步剪贴板', {
+      peerName: this.peerDevice?.deviceName,
+      peerDeviceId: this.peerDevice?.deviceId
+    });
+  }
+
+  /** Reject incoming pair request (from notification action). */
+  public rejectPairing(): void {
+    if (!this.isTlsLive()) {
+      console.warn('[KDE-MVP] rejectPairing: TLS not live');
+      return;
+    }
+    const reject: string = serializePacket('kdeconnect.pair', { pair: false } as KdePairBody);
+    this.sendTls(reject, () => {});
+    this.paired = false;
+    this.pairRequestSentForGen = -1;
+    this.notifySessionChange();
+    console.info('[KDE-MVP] Pair request rejected');
   }
 
   /**

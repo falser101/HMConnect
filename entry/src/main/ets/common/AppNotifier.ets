@@ -351,6 +351,104 @@ export class AppNotifier {
   }
 
   static readonly PERSISTENT_NOTIFY_ID: number = 1;
+  static readonly PAIR_REQUEST_NOTIFY_ID: number = 100;
+
+  /**
+   * Pairing request notification with accept/reject buttons (matches Android).
+   */
+  public async notifyPairRequest(deviceName: string, deviceId: string): Promise<void> {
+    let ok = await this.ensureEnabled();
+    if (!ok || !this.context) {
+      return;
+    }
+
+    // Accept agent
+    let acceptAgent: WantAgent | undefined;
+    try {
+      acceptAgent = await wantAgent.getWantAgent({
+        wants: [{
+          deviceId: '',
+          bundleName: this.context.abilityInfo.bundleName,
+          moduleName: this.context.abilityInfo.moduleName,
+          abilityName: this.context.abilityInfo.name,
+          action: 'ohos.want.action.home',
+          parameters: { 'pairAccept': deviceId }
+        }],
+        operationType: wantAgent.OperationType.START_ABILITY,
+        requestCode: AppNotifier.PAIR_REQUEST_NOTIFY_ID,
+        wantAgentFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
+      });
+    } catch (e) {
+      console.warn('[Notify] pair-accept agent failed:', JSON.stringify(e));
+    }
+
+    // Reject agent
+    let rejectAgent: WantAgent | undefined;
+    try {
+      rejectAgent = await wantAgent.getWantAgent({
+        wants: [{
+          deviceId: '',
+          bundleName: this.context.abilityInfo.bundleName,
+          moduleName: this.context.abilityInfo.moduleName,
+          abilityName: this.context.abilityInfo.name,
+          action: 'ohos.want.action.home',
+          parameters: { 'pairReject': deviceId }
+        }],
+        operationType: wantAgent.OperationType.START_ABILITY,
+        requestCode: AppNotifier.PAIR_REQUEST_NOTIFY_ID + 1,
+        wantAgentFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
+      });
+    } catch (e) {
+      console.warn('[Notify] pair-reject agent failed:', JSON.stringify(e));
+    }
+
+    const request: notificationManager.NotificationRequest = {
+      id: AppNotifier.PAIR_REQUEST_NOTIFY_ID,
+      notificationSlotType: notificationManager.SlotType.SOCIAL_COMMUNICATION,
+      content: {
+        notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
+        normal: {
+          title: '配对请求',
+          text: `${deviceName} 请求配对`
+        }
+      },
+      tapDismissed: true
+    };
+
+    const buttons: notificationManager.NotificationActionButton[] = [];
+    if (acceptAgent) {
+      buttons.push({
+        title: '接受',
+        wantAgent: acceptAgent
+      } as notificationManager.NotificationActionButton);
+    }
+    if (rejectAgent) {
+      buttons.push({
+        title: '拒绝',
+        wantAgent: rejectAgent
+      } as notificationManager.NotificationActionButton);
+    }
+    if (buttons.length > 0) {
+      request.actionButtons = buttons;
+    }
+
+    try {
+      await notificationManager.publish(request);
+      console.info('[Notify] pair-request published:', deviceName);
+    } catch (e) {
+      let err = e as BusinessError;
+      console.error(`[Notify] pair-request publish failed: code=${err.code} ${err.message}`);
+    }
+  }
+
+  /** Remove pairing notification. */
+  public cancelPairRequest(): void {
+    try {
+      notificationManager.cancel(AppNotifier.PAIR_REQUEST_NOTIFY_ID);
+    } catch (_e) {
+      // ignore
+    }
+  }
 
   /**
    * Persistent notification with action buttons (matches Android).

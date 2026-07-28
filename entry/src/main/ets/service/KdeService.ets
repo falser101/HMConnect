@@ -287,6 +287,11 @@ export class KdeService {
     this.client.sendClipboardFromText(text);
   }
 
+  /** Expose client for pairing acceptance. */
+  public getClient(): KdeClient {
+    return this.client;
+  }
+
   /** Create a FileSendJob bound to this device session. */
   public createFileSendJob(): FileSendJob {
     return new FileSendJob(this.client);

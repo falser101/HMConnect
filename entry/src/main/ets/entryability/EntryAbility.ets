@@ -4,6 +4,7 @@ import { window } from '@kit.ArkUI';
 import { fileUri } from '@kit.CoreFileKit';
 import { AppSession } from '../app/AppSession';
 import { FindMyPhoneHelper } from '../common/FindMyPhoneHelper';
+import { AppNotifier } from '../common/AppNotifier';
 import { KdeBackgroundService } from '../service/KdeBackgroundService';
 import { ImmersiveUtil } from '../common/ImmersiveUtil';
 import { UiTheme } from '../common/ui/UiTheme';
@@ -103,6 +104,26 @@ export default class EntryAbility extends UIAbility {
     if (sendFile) {
       hilog.info(DOMAIN, 'testTag', 'Send file to device: %{public}s', sendFile);
       AppSession.getInstance().openFileSendFor(sendFile);
+      return;
+    }
+
+    // Pairing accept from notification
+    const pairAccept: string | undefined =
+      want.parameters !== undefined ? want.parameters['pairAccept'] as string : undefined;
+    if (pairAccept) {
+      hilog.info(DOMAIN, 'testTag', 'Accept pair from notification: %{public}s', pairAccept);
+      AppNotifier.getInstance().cancelPairRequest();
+      AppSession.getInstance().acceptPairing();
+      return;
+    }
+
+    // Pairing reject from notification
+    const pairReject: string | undefined =
+      want.parameters !== undefined ? want.parameters['pairReject'] as string : undefined;
+    if (pairReject) {
+      hilog.info(DOMAIN, 'testTag', 'Reject pair from notification: %{public}s', pairReject);
+      AppNotifier.getInstance().cancelPairRequest();
+      AppSession.getInstance().rejectPairing();
       return;
     }
 

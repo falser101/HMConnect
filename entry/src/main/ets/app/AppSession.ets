@@ -140,6 +140,16 @@ export class AppSession {
     }
   }
 
+  /** Accept incoming pair request (from notification). */
+  public acceptPairing(): void {
+    this.service.getClient().acceptPairing();
+  }
+
+  /** Reject incoming pair request (from notification). */
+  public rejectPairing(): void {
+    this.service.getClient().rejectPairing();
+  }
+
   /** Navigate to device detail and trigger file picker. */
   public openFileSendFor(deviceId: string): void {
     if (this.uiContext) {
