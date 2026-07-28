@@ -454,31 +454,30 @@ export class KdeClient {
 
   /** Debug: discover active audio sessions using available APIs. */
   private debugDiscoverSessions(): void {
+    // Try known API names one by one — whichever compiles and runs
     try {
-      const av = avSession as Record<string, Function>;
-      const keys: string[] = Object.keys(av);
-      const sessionKeys: string[] = keys.filter((k: string) =>
-        k.toLowerCase().includes('session') || k.toLowerCase().includes('get'));
-      console.info('[KDE-MVP] avSession keys:', sessionKeys.join(', '));
-
-      // Try getAVSession (compiler suggestion)
-      if (typeof av['getAVSession'] === 'function') {
-        av['getAVSession']('audio').then((sessions: Object[]) => {
-          console.info('[KDE-MVP] getAVSession OK, count:', sessions.length);
-          for (const s of sessions) {
-            const d = s as Record<string, Object>;
-            console.info('[KDE-MVP]   session:', d['sessionId'], d['type']);
-          }
+      // Method 1: avSession.getAVSession('audio')
+      const gav: Function = (avSession as Object)['getAVSession'] as Function;
+      if (gav !== undefined) {
+        gav.call(avSession, 'audio').then((r: Object) => {
+          const arr: Object[] = r as Object[];
+          console.info('[KDE-MVP] getAVSession OK, count:', arr.length);
         }).catch((e: Error) => console.warn('[KDE-MVP] getAVSession failed:', e.message));
       }
+    } catch (e) {
+      console.warn('[KDE-MVP] getAVSession not found');
+    }
 
-      if (typeof av['getAllSessionDescriptors'] === 'function') {
-        av['getAllSessionDescriptors']().then((sessions: Object[]) => {
-          console.info('[KDE-MVP] getAllSessionDescriptors OK, count:', sessions.length);
+    try {
+      const gasd: Function = (avSession as Object)['getAllSessionDescriptors'] as Function;
+      if (gasd !== undefined) {
+        gasd.call(avSession).then((r: Object) => {
+          const arr: Object[] = r as Object[];
+          console.info('[KDE-MVP] getAllSessionDescriptors OK, count:', arr.length);
         }).catch((e: Error) => console.warn('[KDE-MVP] getAllSessionDescriptors failed:', e.message));
       }
     } catch (e) {
-      console.warn('[KDE-MVP] debugDiscoverSessions error:', JSON.stringify(e));
+      console.warn('[KDE-MVP] getAllSessionDescriptors not found');
     }
   }
 
