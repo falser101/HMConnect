@@ -19,6 +19,9 @@ export const PACKET_TYPE_SHARE_REQUEST_UPDATE: string = 'kdeconnect.share.reques
 /** Fixed MVP device id (must match CN of bundled TLS cert). */
 export const MY_DEVICE_ID: string = 'a1b2c3d4e5f6789012345678abcdef01';
 
+export const PACKET_TYPE_MPRIS: string = 'kdeconnect.mpris';
+export const PACKET_TYPE_MPRIS_REQUEST: string = 'kdeconnect.mpris.request';
+
 /** Packets this device can receive. */
 export const INCOMING_CAPABILITIES: string[] = [
   'kdeconnect.clipboard',
@@ -27,7 +30,8 @@ export const INCOMING_CAPABILITIES: string[] = [
   'kdeconnect.ping',
   'kdeconnect.battery',
   'kdeconnect.findmyphone.request',
-  'kdeconnect.share.request'
+  'kdeconnect.share.request',
+  'kdeconnect.mpris'
 ];
 
 /** Packets this device can send. */
@@ -37,7 +41,8 @@ export const OUTGOING_CAPABILITIES: string[] = [
   'kdeconnect.pair',
   'kdeconnect.ping',
   'kdeconnect.battery',
-  'kdeconnect.share.request'
+  'kdeconnect.share.request',
+  'kdeconnect.mpris.request'
 ];
 
 /** @deprecated use INCOMING/OUTGOING; kept for any leftover imports. */
@@ -257,4 +262,24 @@ export function sanitizeDeviceName(name: string): string {
     cleaned = cleaned.substring(0, 32);
   }
   return cleaned;
+}
+
+/** MPRIS player state (mirrors Android MprisPlugin.MprisPlayer). */
+export interface MprisPlayerState {
+  player: string;
+  title: string;
+  artist: string;
+  album: string;
+  isPlaying: boolean;
+  canPlay: boolean;
+  canPause: boolean;
+  canGoNext: boolean;
+  canGoPrevious: boolean;
+  canSeek: boolean;
+  volume: number;
+  length: number;  // ms
+  pos: number;     // ms
+  lastPositionTime: number;
+  loopStatus: string;
+  shuffle: boolean;
 }

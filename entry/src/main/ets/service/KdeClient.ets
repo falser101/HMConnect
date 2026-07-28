@@ -12,6 +12,7 @@ import {
   KdePingBody,
   KdeBatteryBody,
   KdeShareRequestBody,
+  KdeFindMyPhoneBody,
   KdePacket,
   PayloadTransferInfo,
   PeerBatteryInfo,
@@ -25,6 +26,9 @@ import {
   PAYLOAD_TRANSFER_MIN_PORT,
   PAYLOAD_TRANSFER_MAX_PORT,
   PACKET_TYPE_SHARE_REQUEST,
+  PACKET_TYPE_MPRIS,
+  PACKET_TYPE_MPRIS_REQUEST,
+  MprisPlayerState,
   sanitizeDeviceName,
   serializePacket,
   serializePacketWithPayload,
@@ -76,6 +80,9 @@ export class KdeClient {
   private pendingPairAccept: boolean = false;
   /** Peer has requested pairing — UI shows accept/reject. */
   private pairRequestedByPeer: boolean = false;
+  /** Latest MPRIS player state from remote device. */
+  private mprisPlayer: MprisPlayerState | null = null;
+  private onMprisChange?: (player: MprisPlayerState | null) => void;
   private statusCallback?: (status: KdeStatus) => void;
   private onSessionChange?: (live: boolean, paired: boolean) => void;
   private lineBuffer: string = '';
@@ -152,12 +159,118 @@ export class KdeClient {
       console.warn('[KDE-MVP] sendFindMyPhone: TLS not live');
       return;
     }
-    const json: string = serializePacket('kdeconnect.findmyphone.request', {});
+    const json: string = serializePacket('kdeconnect.findmyphone.request', {} as KdeFindMyPhoneBody);
     this.sendTls(json, (err) => {
       if (err) {
         console.error('[KDE-MVP] findmyphone send failed:', JSON.stringify(err));
       }
     });
+  }
+
+  // ── MPRIS ─────────────────────────────────────────────────
+
+  /** Latest MPRIS player state from remote. */
+  public getMprisPlayer(): MprisPlayerState | null {
+    return this.mprisPlayer;
+  }
+
+  public setMprisChangeListener(cb: (player: MprisPlayerState | null) => void): void {
+    this.onMprisChange = cb;
+  }
+
+  private handleMprisPacket(body: object): void {
+    const b = body as Record<string, Object>;
+    const player: string = typeof b['player'] === 'string' ? b['player'] as string : '';
+    if (player.length === 0) {
+      return;
+    }
+    const now: number = Date.now();
+    const prev: MprisPlayerState = this.mprisPlayer ?? {
+      player: '', title: '', artist: '', album: '',
+      isPlaying: false, canPlay: true, canPause: true,
+      canGoNext: true, canGoPrevious: true, canSeek: true,
+      volume: 50, length: -1, pos: 0, lastPositionTime: now,
+      loopStatus: '', shuffle: false
+    };
+    const title: string = typeof b['title'] === 'string' ? b['title'] as string : prev.title;
+    const artist: string = typeof b['artist'] === 'string' ? b['artist'] as string : prev.artist;
+    const album: string = typeof b['album'] === 'string' ? b['album'] as string : prev.album;
+    const isPlaying: boolean = typeof b['isPlaying'] === 'boolean' ? b['isPlaying'] as boolean : prev.isPlaying;
+    const canPlay: boolean = typeof b['canPlay'] === 'boolean' ? b['canPlay'] as boolean : prev.canPlay;
+    const canPause: boolean = typeof b['canPause'] === 'boolean' ? b['canPause'] as boolean : prev.canPause;
+    const canGoNext: boolean = typeof b['canGoNext'] === 'boolean' ? b['canGoNext'] as boolean : prev.canGoNext;
+    const canGoPrevious: boolean = typeof b['canGoPrevious'] === 'boolean' ? b['canGoPrevious'] as boolean : prev.canGoPrevious;
+    const canSeek: boolean = typeof b['canSeek'] === 'boolean' ? b['canSeek'] as boolean : prev.canSeek;
+    const volume: number = typeof b['volume'] === 'number' ? b['volume'] as number : prev.volume;
+    const length: number = typeof b['length'] === 'number' ? b['length'] as number : prev.length;
+    let pos: number = typeof b['pos'] === 'number' ? b['pos'] as number : prev.pos;
+    const loopStatus: string = typeof b['loopStatus'] === 'string' ? b['loopStatus'] as string : prev.loopStatus;
+    const shuffle: boolean = typeof b['shuffle'] === 'boolean' ? b['shuffle'] as boolean : prev.shuffle;
+
+    this.mprisPlayer = {
+      player, title, artist, album, isPlaying,
+      canPlay, canPause, canGoNext, canGoPrevious, canSeek,
+      volume, length, pos, lastPositionTime: now,
+      loopStatus, shuffle
+    };
+
+    console.info(`[KDE-MVP] MPRIS: ${title} - ${artist} playing=${isPlaying}`);
+    if (this.onMprisChange) {
+      this.onMprisChange(this.mprisPlayer);
+    }
+  }
+
+  private sendMprisCommand(cmd: Record<string, Object>): void {
+    if (!this.isTlsLive()) {
+      return;
+    }
+    const json: string = serializePacket(PACKET_TYPE_MPRIS_REQUEST, cmd);
+    this.sendTls(json, () => {});
+  }
+
+  public mprisPlayPause(): void {
+    const p = this.mprisPlayer;
+    if (!p || p.player.length === 0) {
+      return;
+    }
+    const cmd: Record<string, Object> = { 'player': p.player, 'action': 'PlayPause' };
+    this.sendMprisCommand(cmd);
+  }
+
+  public mprisPrevious(): void {
+    const p = this.mprisPlayer;
+    if (!p || p.player.length === 0) {
+      return;
+    }
+    const cmd: Record<string, Object> = { 'player': p.player, 'action': 'Previous' };
+    this.sendMprisCommand(cmd);
+  }
+
+  public mprisNext(): void {
+    const p = this.mprisPlayer;
+    if (!p || p.player.length === 0) {
+      return;
+    }
+    const cmd: Record<string, Object> = { 'player': p.player, 'action': 'Next' };
+    this.sendMprisCommand(cmd);
+  }
+
+  public mprisSetVolume(vol: number): void {
+    const p = this.mprisPlayer;
+    if (!p || p.player.length === 0) {
+      return;
+    }
+    const cmd: Record<string, Object> = { 'player': p.player, 'setVolume': vol };
+    this.sendMprisCommand(cmd);
+  }
+
+  public mprisSeek(offset: number): void {
+    const p = this.mprisPlayer;
+    if (!p || p.player.length === 0) {
+      return;
+    }
+    const cmd: Record<string, Object> = { 'player': p.player, 'Seek': offset };
+    this.sendMprisCommand(cmd);
   }
 
   private emit(state: ConnectionState, message: string, extra?: Partial<KdeStatus>): void {
@@ -1071,6 +1184,11 @@ export class KdeClient {
 
     if (type === 'kdeconnect.identity') {
       // post-TLS identity (protocol 8); accept quietly
+      return;
+    }
+
+    if (type === PACKET_TYPE_MPRIS) {
+      this.handleMprisPacket(body);
       return;
     }
 
