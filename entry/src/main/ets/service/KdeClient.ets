@@ -32,7 +32,6 @@ import {
 } from './KdeTypes';
 import { DeviceStore } from '../store/DeviceStore';
 import { utf8Decode } from '../common/Utf8';
-import { AppNotifier } from '../common/AppNotifier';
 import { BatteryHelper } from '../common/BatteryHelper';
 import { FindMyPhoneHelper } from '../common/FindMyPhoneHelper';
 
@@ -565,11 +564,10 @@ export class KdeClient {
         return;
       }
 
-      this.emit('connected', '已加密连接，请在电脑上点「接受」配对', {
+      this.emit('connected', '已加密连接', {
         peerName: device.deviceName,
         peerDeviceId: device.deviceId
       });
-      this.sendPairRequestOnce(gen, true);
 
     } catch (e) {
       console.error('[KDE-MVP] Outbound connection failed:', JSON.stringify(e));
@@ -949,11 +947,10 @@ export class KdeClient {
           return;
         }
 
-        this.emit('connected', '已加密连接，请在电脑上点「接受」配对', {
+        this.emit('connected', '已加密连接', {
           peerName: peer.deviceName,
           peerDeviceId: peer.deviceId
         });
-        this.sendPairRequestOnce(gen, true);
       });
     } catch (e) {
       console.error('[KDE-MVP] TLS connect threw:', JSON.stringify(e));
@@ -1459,6 +1456,28 @@ export class KdeClient {
       return;
     }
     this.sendClipboard(text);
+  }
+
+  /** User-initiated pair request (Android: requestPairing). */
+  public requestPairing(): void {
+    if (!this.isTlsLive()) {
+      console.warn('[KDE-MVP] requestPairing: TLS not live');
+      this.emit('error', '请先连接设备');
+      return;
+    }
+    if (this.paired) {
+      console.warn('[KDE-MVP] requestPairing: already paired');
+      return;
+    }
+    if (this.peerDevice && this.isTrusted(this.peerDevice.deviceId)) {
+      this.paired = true;
+      this.emit('paired', `已与 ${this.peerDevice.deviceName} 恢复加密连接`, {
+        peerName: this.peerDevice.deviceName,
+        peerDeviceId: this.peerDevice.deviceId
+      });
+      return;
+    }
+    this.sendPairRequestOnce(this.sessionGen, true);
   }
 
   /** Accept incoming pair request (from notification action). */

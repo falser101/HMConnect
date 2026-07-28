@@ -292,6 +292,11 @@ export class KdeService {
     return this.client;
   }
 
+  /** User-initiated pair request. */
+  public requestPairing(): void {
+    this.client.requestPairing();
+  }
+
   /** Create a FileSendJob bound to this device session. */
   public createFileSendJob(): FileSendJob {
     return new FileSendJob(this.client);

@@ -149,7 +149,13 @@ struct DeviceDetail {
     if (!this.item) {
       return;
     }
-    this.session.getService().connectListItem(this.item);
+    const svc = this.session.getService();
+    // If already connected (TLS live), request pairing instead of reconnecting
+    if (this.item.sessionActive) {
+      svc.requestPairing();
+    } else {
+      svc.connectListItem(this.item);
+    }
   }
 
   private onDisconnect(): void {
@@ -449,9 +455,9 @@ struct DeviceDetail {
           .margin({ bottom: 12 })
       }
 
-      // ── Request pairing button ──
+      // ── Connect / Request pairing button ──
       KdePrimaryButton({
-        label: $r('app.string.pairing_request_button'),
+        label: this.item?.sessionActive ? $r('app.string.pairing_request_button') : $r('app.string.plugins_connect_button'),
         isEnabled: !this.isConnecting() || this.hasError(),
         onTap: () => {
           this.onConnectOrPair();
