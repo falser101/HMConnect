@@ -61,6 +61,7 @@ export class KdeClient {
 
   // ── Outbound connection state (we initiate TCP to peer) ──
   private outboundActive: boolean = false;
+  private outboundTargetIp: string = '';
   private outPeerSock: socket.TCPSocket | null = null;
   private outBridgeServer: socket.TCPSocketServer | null = null;
   private outBridgeAccepted: socket.TCPSocketConnection | null = null;
@@ -571,6 +572,7 @@ export class KdeClient {
     }
 
     this.outboundActive = true;
+    this.outboundTargetIp = device.ip;
     this.handlingIncoming = true;
     this.peerDevice = device;
 
@@ -818,6 +820,7 @@ export class KdeClient {
     try { this.outPeerSock?.close(); } catch (_e) {}
     this.outPeerSock = null;
     this.outboundActive = false;
+    this.outboundTargetIp = '';
   }
 
   private buildIdentityPacket(targetId?: string, targetProto?: number): string {
@@ -838,16 +841,18 @@ export class KdeClient {
   }
 
   private handleIncomingConnection(client: socket.TCPSocketConnection): void {
-    // While we already have a healthy encrypted session, drop duplicates.
-    // Periodic UDP identity makes KDE Connect reconnect every few seconds.
+    // Outbound in progress → accept reverse connection from same peer instead
     if (this.outboundActive) {
-      console.info('[KDE-MVP] Reject concurrent TCP: outbound connection in progress');
-      try {
-        client.close();
-      } catch (_e) {
-        // ignore
+      const remoteAddr: string = client.remoteAddress?.address ?? '';
+      if (remoteAddr.length > 0 && remoteAddr === this.outboundTargetIp) {
+        console.info('[KDE-MVP] Reverse connect while outbound — accept reverse, cancel outbound');
+        this.cleanOutboundState();
+        // Fall through to handle this as normal reverse connection
+      } else {
+        console.info('[KDE-MVP] Reject concurrent TCP: outbound to different host');
+        try { client.close(); } catch (_e) { /* ignore */ }
+        return;
       }
-      return;
     }
     if (this.sessionLive && this.handlingIncoming === false) {
       console.info('[KDE-MVP] Reject concurrent TCP: session already live');
