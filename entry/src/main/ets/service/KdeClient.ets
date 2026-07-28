@@ -433,6 +433,9 @@ export class KdeClient {
       });
       console.info('[KDE-MVP] AVSession initial state set to STOP');
       console.info('[KDE-MVP] MPRIS receiver AVSession activated');
+
+      // Debug: try to discover what APIs are available for session listing
+      this.debugDiscoverSessions();
     } catch (e) {
       console.warn('[KDE-MVP] setupMprisReceiver failed:', JSON.stringify(e));
       this.mprisSession = null;
@@ -446,6 +449,36 @@ export class KdeClient {
     if (s) {
       try { s.deactivate(); } catch (_e) {}
       try { s.destroy(); } catch (_e) {}
+    }
+  }
+
+  /** Debug: discover active audio sessions using available APIs. */
+  private debugDiscoverSessions(): void {
+    try {
+      const av = avSession as Record<string, Function>;
+      const keys: string[] = Object.keys(av);
+      const sessionKeys: string[] = keys.filter((k: string) =>
+        k.toLowerCase().includes('session') || k.toLowerCase().includes('get'));
+      console.info('[KDE-MVP] avSession keys:', sessionKeys.join(', '));
+
+      // Try getAVSession (compiler suggestion)
+      if (typeof av['getAVSession'] === 'function') {
+        av['getAVSession']('audio').then((sessions: Object[]) => {
+          console.info('[KDE-MVP] getAVSession OK, count:', sessions.length);
+          for (const s of sessions) {
+            const d = s as Record<string, Object>;
+            console.info('[KDE-MVP]   session:', d['sessionId'], d['type']);
+          }
+        }).catch((e: Error) => console.warn('[KDE-MVP] getAVSession failed:', e.message));
+      }
+
+      if (typeof av['getAllSessionDescriptors'] === 'function') {
+        av['getAllSessionDescriptors']().then((sessions: Object[]) => {
+          console.info('[KDE-MVP] getAllSessionDescriptors OK, count:', sessions.length);
+        }).catch((e: Error) => console.warn('[KDE-MVP] getAllSessionDescriptors failed:', e.message));
+      }
+    } catch (e) {
+      console.warn('[KDE-MVP] debugDiscoverSessions error:', JSON.stringify(e));
     }
   }
 
