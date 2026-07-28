@@ -978,7 +978,16 @@ export class KdeClient {
     if (type === 'kdeconnect.pair') {
       let pairBody = body as KdePairBody;
       if (pairBody.pair) {
+        // Already paired → silently re-accept (break potential loop with pair:true only)
+        if (this.paired) {
+          const accept: string = serializePacket('kdeconnect.pair', { pair: true } as KdePairBody);
+          this.sendTls(accept, () => {});
+          return;
+        }
+
+        const weRequested: boolean = this.pairRequestSentForGen >= 0;
         this.paired = true;
+        this.pairRequestSentForGen = -1;
         if (this.peerDevice) {
           this.trustedDeviceIds.add(this.peerDevice.deviceId);
           this.persistTrust(this.peerDevice).catch((e: Error) => {
@@ -986,11 +995,23 @@ export class KdeClient {
           });
         }
         this.notifySessionChange();
-        this.emit('paired', '配对成功！可同步剪贴板', {
-          peerName: this.peerDevice?.deviceName,
-          peerDeviceId: this.peerDevice?.deviceId
-        });
-      } else {
+
+        if (weRequested) {
+          // Our outgoing pair request was accepted (Android: pairingDone when state==Requested)
+          this.emit('paired', '配对成功！可同步剪贴板', {
+            peerName: this.peerDevice?.deviceName,
+            peerDeviceId: this.peerDevice?.deviceId
+          });
+        } else {
+          // Peer requested pairing → accept by sending pair:true back (Android: acceptPairing)
+          console.info('[KDE-MVP] Peer requested pairing, accepting');
+          const accept: string = serializePacket('kdeconnect.pair', { pair: true } as KdePairBody);
+          this.sendTls(accept, () => {});
+          this.emit('paired', '配对成功！可同步剪贴板', {
+            peerName: this.peerDevice?.deviceName,
+            peerDeviceId: this.peerDevice?.deviceId
+          });
+        }
         // Unpair / reject — match Android PairingHandler.packetReceived(pair=false)
         const wasPaired: boolean = this.paired;
         const wasRequesting: boolean = this.pairRequestSentForGen >= 0;
