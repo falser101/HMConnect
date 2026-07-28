@@ -329,6 +329,11 @@ export class KdeService {
     this.client.stopFindMyPhone();
   }
 
+  /** Make the remote device ring. */
+  public sendRing(): void {
+    this.client.sendFindMyPhone();
+  }
+
   public getPeerBattery(): PeerBatteryInfo | null {
     return this.client.getPeerBattery();
   }

@@ -184,6 +184,11 @@ struct DeviceDetail {
     this.showToast($r('app.string.toast_ping_sent'));
   }
 
+  private onRing(): void {
+    this.closeMenu();
+    this.session.getService().sendRing();
+  }
+
   private async onSendFiles(): Promise<void> {
     try {
       // ── Open DocumentViewPicker ──
@@ -374,8 +379,8 @@ struct DeviceDetail {
         }, false, false)
 
         this.MenuItem($r('app.string.menu_ring'), () => {
-          this.onDisabledTap();
-        }, false, true)
+          this.onRing();
+        }, false, false)
 
         Divider().color(UiTheme.divider).width('100%')
 

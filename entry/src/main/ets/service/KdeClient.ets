@@ -146,6 +146,20 @@ export class KdeClient {
     FindMyPhoneHelper.getInstance().stop();
   }
 
+  /** Make the remote device ring (Android FindMyPhonePlugin). */
+  public sendFindMyPhone(): void {
+    if (!this.isTlsLive()) {
+      console.warn('[KDE-MVP] sendFindMyPhone: TLS not live');
+      return;
+    }
+    const json: string = serializePacket('kdeconnect.findmyphone.request', {});
+    this.sendTls(json, (err) => {
+      if (err) {
+        console.error('[KDE-MVP] findmyphone send failed:', JSON.stringify(err));
+      }
+    });
+  }
+
   private emit(state: ConnectionState, message: string, extra?: Partial<KdeStatus>): void {
     // Never paint a red error over an already-good session (outbound probe used to do this)
     if (state === 'error' && (this.paired || this.sessionLive)) {
