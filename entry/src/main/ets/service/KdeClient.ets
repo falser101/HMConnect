@@ -60,6 +60,8 @@ export class KdeClient {
   private bridgeLocalAccepted: socket.TCPSocketConnection | null = null;
   private bridgeLocalServer: socket.TCPSocketServer | null = null;
   private bridgeLocalClient: socket.TCPSocket | null = null;
+  /** Buffer early TLS bytes arriving before bridge is wired. */
+  private pendingBridgeBytes: ArrayBuffer[] = [];
 
   // ── Outbound connection state (we initiate TCP to peer) ──
   private outboundActive: boolean = false;
@@ -1090,6 +1092,15 @@ export class KdeClient {
         this.bridgeLocalAccepted = localAccepted;
         console.info('[KDE-MVP] Local bridge leg connected');
 
+        // Flush any early TLS bytes that arrived before the bridge was ready
+        if (this.pendingBridgeBytes.length > 0) {
+          console.info('[KDE-MVP] Flushing', this.pendingBridgeBytes.length, 'pending bridge bytes');
+          for (const ab of this.pendingBridgeBytes) {
+            localAccepted.send({ data: ab }, () => {});
+          }
+          this.pendingBridgeBytes = [];
+        }
+
         localAccepted.on('message', (value: socket.SocketMessageInfo) => {
           remote.send({ data: value.message }, (e) => {
             if (e) {
@@ -1109,7 +1120,10 @@ export class KdeClient {
         if (this.bridgeLocalClient && !bridgeReady) {
           bridgeReady = true;
           console.info('[KDE-MVP] Bridge ready, starting TLS client…');
-          this.upgradeClientTls(this.bridgeLocalClient, peer, gen);
+          // Defer TLS to next tick so bridge data wiring is complete
+          setTimeout(() => {
+            this.upgradeClientTls(this.bridgeLocalClient!, peer, gen);
+          }, 50);
         }
       });
 
@@ -1131,7 +1145,9 @@ export class KdeClient {
         if (this.bridgeLocalAccepted && !bridgeReady) {
           bridgeReady = true;
           console.info('[KDE-MVP] Bridge ready, starting TLS client…');
-          this.upgradeClientTls(this.bridgeLocalClient!, peer, gen);
+          setTimeout(() => {
+            this.upgradeClientTls(this.bridgeLocalClient!, peer, gen);
+          }, 50);
         }
       });
     });
@@ -1144,6 +1160,9 @@ export class KdeClient {
           console.error('[KDE-MVP] Bridge local send failed:', JSON.stringify(e));
         }
       });
+    } else {
+      // Bridge not ready yet — buffer for later flush
+      this.pendingBridgeBytes.push(message);
     }
   }
 
@@ -1864,6 +1883,7 @@ export class KdeClient {
       // ignore
     }
     this.bridgeLocalClient = null;
+    this.pendingBridgeBytes = [];
     try {
       this.bridgeLocalAccepted?.close();
     } catch (_e) {
