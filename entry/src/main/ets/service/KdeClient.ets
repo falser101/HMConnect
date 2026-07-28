@@ -97,6 +97,7 @@ export class KdeClient {
   private localVolume: number = 50;
   /** AVSession for receiving system media keys and reporting state. */
   private mprisSession: avSession.AVSession | null = null;
+  private mprisController: avSession.AVSessionController | null = null;
   private statusCallback?: (status: KdeStatus) => void;
   private onSessionChange?: (live: boolean, paired: boolean) => void;
   private lineBuffer: string = '';
@@ -344,29 +345,19 @@ export class KdeClient {
       }).catch(() => {});
     }
 
-    // Also try system-level media key (may work on some devices)
-    try {
-      const ev: avSession.AVKeyEvent = { keyAction: 1 };
-      switch (action) {
-        case 'Play':
-        case 'Pause':
-        case 'PlayPause':
-          ev.keyCode = 'playPause';
-          break;
-        case 'Next':
-          ev.keyCode = 'next';
-          break;
-        case 'Previous':
-          ev.keyCode = 'previous';
-          break;
+    // Also try system media control — preferred: own controller, fallback: key event
+    if (this.mprisController) {
+      // Use our own controller to send commands to the system
+      const cmdMap: Record<string, string> = {
+        'Play': 'play', 'Pause': 'pause', 'PlayPause': 'play',
+        'Next': 'playNext', 'Previous': 'playPrevious'
+      };
+      const cmd: string | undefined = cmdMap[action];
+      if (cmd) {
+        this.mprisController.sendControlCommand({ command: cmd })
+          .then(() => console.info('[KDE-MVP] controller command OK:', cmd))
+          .catch((e: BusinessError) => console.warn('[KDE-MVP] controller command failed:', e.code));
       }
-      avSession.sendSystemAVKeyEvent(ev, (err: BusinessError) => {
-        if (!err) {
-          console.info('[KDE-MVP] sendSystemAVKeyEvent OK:', action);
-        }
-      });
-    } catch (_e) {
-      // Non-critical
     }
   }
 
@@ -396,11 +387,8 @@ export class KdeClient {
     }
     try {
       this.mprisSession = await avSession.createAVSession(ctx, 'HMConnectMpris', 'audio');
-      await this.mprisSession.activate();
-      await this.mprisSession.setAVPlaybackState({
-        state: avSession.PlaybackState.PLAYBACK_STATE_STOP
-      });
-      // Listen for local media button presses
+
+      // Register commands FIRST (docs: register before activate)
       this.mprisSession.on('play', () => {
         console.info('[KDE-MVP] AVSession local play');
         this.localPlaying = true;
@@ -424,10 +412,19 @@ export class KdeClient {
         console.info('[KDE-MVP] AVSession local playPrevious');
         this.sendLocalMprisStatus();
       });
+
       await this.mprisSession.setAVMetadata({
         assetId: 'hmconnect',
         title: 'HMConnect',
         artist: 'KDE Connect'
+      });
+
+      // Activate + get controller
+      await this.mprisSession.activate();
+      this.mprisController = await this.mprisSession.getController();
+
+      await this.mprisSession.setAVPlaybackState({
+        state: avSession.PlaybackState.PLAYBACK_STATE_STOP
       });
       console.info('[KDE-MVP] MPRIS receiver AVSession activated');
     } catch (e) {
@@ -437,6 +434,7 @@ export class KdeClient {
   }
 
   public teardownMprisReceiver(): void {
+    this.mprisController = null;
     const s = this.mprisSession;
     this.mprisSession = null;
     if (s) {
