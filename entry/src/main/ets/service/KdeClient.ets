@@ -354,33 +354,9 @@ export class KdeClient {
       const cmd: avSession.AVControlCommandType | undefined = cmdMap[action];
       if (cmd) {
         this.mprisController.sendControlCommand({ command: cmd })
-          .catch(() => {});
+          .then(() => console.info('[KDE-MVP] controller command OK:', cmd))
+          .catch((e: BusinessError) => console.warn('[KDE-MVP] controller FAILED:', e.code, e.message));
       }
-    }
-
-    // Also try controlling real audio app via getAVSession
-    this.sendToActiveAudioSession(action);
-  }
-
-  /** Discover active audio sessions and send commands to them. */
-  private async sendToActiveAudioSession(action: string): Promise<void> {
-    try {
-      // SDK compiler suggested getAVSession instead of getAllSessions
-      const sessions = await avSession.getAVSession('audio');
-      console.info('[KDE-MVP] getAVSession OK, count:', sessions.length);
-      if (sessions.length === 0) { return; }
-      const controller = await avSession.createController(sessions[0].sessionId);
-      const cmdMap: Record<string, avSession.AVControlCommandType> = {
-        'Play': 'play', 'Pause': 'pause', 'PlayPause': 'play',
-        'Next': 'playNext', 'Previous': 'playPrevious'
-      };
-      const cmd: avSession.AVControlCommandType | undefined = cmdMap[action];
-      if (cmd) {
-        await controller.sendControlCommand({ command: cmd });
-        console.info('[KDE-MVP] real audio session command OK:', cmd);
-      }
-    } catch (e) {
-      console.warn('[KDE-MVP] getAVSession failed:', JSON.stringify(e));
     }
   }
 
