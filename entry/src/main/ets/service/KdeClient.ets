@@ -72,6 +72,8 @@ export class KdeClient {
   private trustedDeviceIds: Set<string> = new Set();
   /** Avoid sending multiple pair:true while waiting for PC accept. */
   private pairRequestSentForGen: number = -1;
+  /** Pair-accept queued — TLS not yet live when peer's pair:true arrived. */
+  private pendingPairAccept: boolean = false;
   private statusCallback?: (status: KdeStatus) => void;
   private onSessionChange?: (live: boolean, paired: boolean) => void;
   private lineBuffer: string = '';
@@ -920,6 +922,13 @@ export class KdeClient {
         console.info('[KDE-MVP] TLS handshake OK');
         this.sessionLive = true;
         this.handlingIncoming = false;
+        // Flush any pending pair-accept that arrived before TLS was fully live
+        if (this.pendingPairAccept) {
+          this.pendingPairAccept = false;
+          const accept: string = serializePacket('kdeconnect.pair', { pair: true } as KdePairBody);
+          this.sendTls(accept, () => {});
+          console.info('[KDE-MVP] flushed pending pair-accept');
+        }
         this.notifySessionChange();
         // Report phone battery as soon as the channel is up (desktop shows it even pre-pair on some builds)
         this.startBatteryReporting();
@@ -978,10 +987,14 @@ export class KdeClient {
     if (type === 'kdeconnect.pair') {
       let pairBody = body as KdePairBody;
       if (pairBody.pair) {
-        // Already paired → silently re-accept (break potential loop with pair:true only)
+        // Already paired → re-accept silently (break potential loop, Android: auto-accept)
         if (this.paired) {
-          const accept: string = serializePacket('kdeconnect.pair', { pair: true } as KdePairBody);
-          this.sendTls(accept, () => {});
+          if (this.isTlsLive()) {
+            const reAccept: string = serializePacket('kdeconnect.pair', { pair: true } as KdePairBody);
+            this.sendTls(reAccept, () => {});
+          } else {
+            this.pendingPairAccept = true;
+          }
           return;
         }
 
@@ -1004,9 +1017,14 @@ export class KdeClient {
           });
         } else {
           // Peer requested pairing → accept by sending pair:true back (Android: acceptPairing)
-          console.info('[KDE-MVP] Peer requested pairing, accepting');
-          const accept: string = serializePacket('kdeconnect.pair', { pair: true } as KdePairBody);
-          this.sendTls(accept, () => {});
+          if (this.isTlsLive()) {
+            const accept: string = serializePacket('kdeconnect.pair', { pair: true } as KdePairBody);
+            this.sendTls(accept, () => {});
+          } else {
+            // TLS not live yet — queue response, connect callback will flush
+            this.pendingPairAccept = true;
+            console.info('[KDE-MVP] pair-accept queued (TLS not live yet)');
+          }
           this.emit('paired', '配对成功！可同步剪贴板', {
             peerName: this.peerDevice?.deviceName,
             peerDeviceId: this.peerDevice?.deviceId
@@ -1457,6 +1475,7 @@ export class KdeClient {
     this.sessionLive = false;
     this.handlingIncoming = false;
     this.pairRequestSentForGen = -1;
+    this.pendingPairAccept = false;
     this.lineBuffer = '';
     this.peerBattery = null;
     this.stopBatteryReporting();
