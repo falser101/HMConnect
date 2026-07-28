@@ -69,7 +69,9 @@ struct Index {
   private ensureSubscriptions(): void {
     if (this.deviceSubId < 0) {
       this.deviceSubId = this.session.subscribeDevices((items: DeviceListItem[]) => {
-        this.applyDevices(items);
+        setTimeout(() => {
+          this.applyDevices(items);
+        }, 0);
       });
     }
     if (this.statusSubId < 0) {
