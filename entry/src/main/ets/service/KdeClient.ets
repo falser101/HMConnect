@@ -999,25 +999,25 @@ export class KdeClient {
         }
 
         const weRequested: boolean = this.pairRequestSentForGen >= 0;
-        this.paired = true;
         this.pairRequestSentForGen = -1;
-        if (this.peerDevice) {
-          this.trustedDeviceIds.add(this.peerDevice.deviceId);
-          this.persistTrust(this.peerDevice).catch((e: Error) => {
-            console.error('[KDE-MVP] persistTrust failed:', e.message);
-          });
-        }
-        this.notifySessionChange();
 
         if (weRequested) {
           // Our outgoing pair request was accepted (Android: pairingDone when state==Requested)
+          this.paired = true;
+          if (this.peerDevice) {
+            this.trustedDeviceIds.add(this.peerDevice.deviceId);
+            this.persistTrust(this.peerDevice).catch((e: Error) => {
+              console.error('[KDE-MVP] persistTrust failed:', e.message);
+            });
+          }
+          this.notifySessionChange();
           this.emit('paired', '配对成功！可同步剪贴板', {
             peerName: this.peerDevice?.deviceName,
             peerDeviceId: this.peerDevice?.deviceId
           });
         } else {
-          // Peer requested pairing → show notification (Android: callback.incomingPairRequest)
           // Peer requested pairing → show notification + enable in-app accept/reject
+          // Do NOT set paired until user taps Accept
           this.pairRequestedByPeer = true;
           this.notifySessionChange();
           console.info('[KDE-MVP] Peer requested pairing, showing notification');
