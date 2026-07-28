@@ -345,18 +345,34 @@ export class KdeClient {
       }).catch(() => {});
     }
 
-    // Use own controller + AVSession state
-    if (this.mprisController) {
+    // Also try controlling real audio app
+    this.sendToActiveAudioSession(action);
+  }
+
+  /** Discover active audio sessions and send commands (needs MANAGE_MEDIA_RESOURCES_FOR_PUBLIC). */
+  private async sendToActiveAudioSession(action: string): Promise<void> {
+    try {
+      const descriptors: avSession.AVSessionDescriptor[] = await avSession.getAllSessionDescriptors();
+      console.info('[KDE-MVP] getAllSessionDescriptors OK, count:', descriptors.length);
+      // Find first active audio session
+      const target = descriptors.find((d: avSession.AVSessionDescriptor) => d.type === 'audio' && d.isActive);
+      if (!target) {
+        console.info('[KDE-MVP] no active audio session found');
+        return;
+      }
+      console.info('[KDE-MVP] found audio session:', target.sessionTag, target.type);
+      const controller = await avSession.createController(target.sessionId);
       const cmdMap: Record<string, avSession.AVControlCommandType> = {
         'Play': 'play', 'Pause': 'pause', 'PlayPause': 'play',
         'Next': 'playNext', 'Previous': 'playPrevious'
       };
       const cmd: avSession.AVControlCommandType | undefined = cmdMap[action];
       if (cmd) {
-        this.mprisController.sendControlCommand({ command: cmd })
-          .then(() => console.info('[KDE-MVP] controller command OK:', cmd))
-          .catch((e: BusinessError) => console.warn('[KDE-MVP] controller FAILED:', e.code, e.message));
+        await controller.sendControlCommand({ command: cmd });
+        console.info('[KDE-MVP] real audio session command OK:', cmd);
       }
+    } catch (e) {
+      console.warn('[KDE-MVP] getAllSessionDescriptors failed:', JSON.stringify(e));
     }
   }
 

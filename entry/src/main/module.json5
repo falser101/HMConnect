@@ -84,6 +84,14 @@
           "abilities": ["EntryAbility"],
           "when": "always"
         }
+      },
+      {
+        "name": "ohos.permission.MANAGE_MEDIA_RESOURCES_FOR_PUBLIC",
+        "reason": "$string:permission_media_reason",
+        "usedScene": {
+          "abilities": ["EntryAbility"],
+          "when": "inuse"
+        }
       }
     ]
   }

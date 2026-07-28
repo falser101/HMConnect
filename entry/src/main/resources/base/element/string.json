@@ -37,6 +37,10 @@
       "value": "用于应用在后台时持续响铃查找设备"
     },
     {
+      "name": "permission_media_reason",
+      "value": "用于远程控制多媒体播放（暂停、切歌、调节音量）"
+    },
+    {
       "name": "settings_device_name",
       "value": "设备名称"
     },
