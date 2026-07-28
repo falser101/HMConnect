@@ -64,6 +64,10 @@ export class KdeClient {
   // ── Outbound connection state (we initiate TCP to peer) ──
   private outboundActive: boolean = false;
   private outboundTargetIp: string = '';
+  /** Rate limiting (Android: rateLimitByIp / rateLimitByDeviceId). */
+  private lastConnTimeByIp: Record<string, number> = {};
+  private lastConnTimeById: Record<string, number> = {};
+  private static readonly CONN_RATE_MS: number = 1000;
   private outPeerSock: socket.TCPSocket | null = null;
   private outBridgeServer: socket.TCPSocketServer | null = null;
   private outBridgeAccepted: socket.TCPSocketConnection | null = null;
@@ -321,51 +325,11 @@ export class KdeClient {
     }
   }
 
-  /** Execute media control via system AV key events (no special permission needed). */
+  /** Execute media control via local state update. */
   private handleMprisAction(action: string): void {
     console.info('[KDE-MVP] MPRIS receiver action:', action);
-    try {
-      // Map to system key events
-      const ev: avSession.AVKeyEvent = { keyAction: 1 }; // KEY_ACTION_DOWN
-      switch (action) {
-        case 'Play':
-        case 'Pause':
-        case 'PlayPause':
-          ev.keyCode = 'playPause';
-          break;
-        case 'Next':
-          ev.keyCode = 'next';
-          break;
-        case 'Previous':
-          ev.keyCode = 'previous';
-          break;
-        case 'Stop':
-          ev.keyCode = 'pause';
-          break;
-        default:
-          return;
-      }
-      avSession.sendSystemAVKeyEvent(ev, (err: BusinessError) => {
-        if (err) {
-          console.warn('[KDE-MVP] sendSystemAVKeyEvent failed:', err.code, err.message);
-          // Fallback: update local state
-          this.fallbackHandleAction(action);
-        } else {
-          console.info('[KDE-MVP] sendSystemAVKeyEvent OK:', action);
-          // Toggle local state for status reporting
-          if (action === 'PlayPause') {
-            this.localPlaying = !this.localPlaying;
-          } else if (action === 'Play') {
-            this.localPlaying = true;
-          } else {
-            this.localPlaying = false;
-          }
-          this.sendLocalMprisStatus();
-        }
-      });
-    } catch (_e) {
-      this.fallbackHandleAction(action);
-    }
+    // Directly update local state since sendSystemAVKeyEvent API is not available
+    this.fallbackHandleAction(action);
   }
 
   private fallbackHandleAction(action: string): void {
@@ -399,11 +363,19 @@ export class KdeClient {
         state: avSession.PlaybackState.PLAYBACK_STATE_STOP
       });
       // Listen for local media button presses
-      this.mprisSession.on('controlCommand', (cmd: avSession.AVControlCommand) => {
-        console.info('[KDE-MVP] AVSession local controlCommand:', cmd.command);
-        if (cmd.command === 'play') this.localPlaying = true;
-        else if (cmd.command === 'pause') this.localPlaying = false;
-        else if (cmd.command === 'stop') this.localPlaying = false;
+      this.mprisSession.on('play', () => {
+        console.info('[KDE-MVP] AVSession local play');
+        this.localPlaying = true;
+        this.sendLocalMprisStatus();
+      });
+      this.mprisSession.on('pause', () => {
+        console.info('[KDE-MVP] AVSession local pause');
+        this.localPlaying = false;
+        this.sendLocalMprisStatus();
+      });
+      this.mprisSession.on('stop', () => {
+        console.info('[KDE-MVP] AVSession local stop');
+        this.localPlaying = false;
         this.sendLocalMprisStatus();
       });
       console.info('[KDE-MVP] MPRIS receiver AVSession activated');
@@ -924,32 +896,36 @@ export class KdeClient {
   }
 
   private async handleIncomingConnection(client: socket.TCPSocketConnection): Promise<void> {
-    // Outbound in progress → accept reverse connection from same peer instead
-    if (this.outboundActive) {
-      let remoteAddr: string = '';
-      try {
-        const remoteAddrInfo = await client.getRemoteAddress();
-        remoteAddr = remoteAddrInfo.address ?? '';
-      } catch (e) {
-        console.warn('[KDE-MVP] Failed to get remote address:', JSON.stringify(e));
-      }
-      if (remoteAddr.length > 0 && remoteAddr === this.outboundTargetIp) {
-        console.info('[KDE-MVP] Reverse connect while outbound — accept reverse, cancel outbound');
-        this.cleanOutboundState();
-        // Fall through to handle this as normal reverse connection
-      } else {
-        console.info('[KDE-MVP] Reject concurrent TCP: outbound to different host');
-        try { client.close(); } catch (_e) { /* ignore */ }
-        return;
-      }
+    let remoteAddr: string = '';
+    try {
+      remoteAddr = (await client.getRemoteAddress()).address ?? '';
+    } catch (e) {
+      console.warn('[KDE-MVP] Failed to get remote address:', JSON.stringify(e));
     }
-    if (this.sessionLive && this.handlingIncoming === false) {
-      console.info('[KDE-MVP] Reject concurrent TCP: session already live');
-      try {
-        client.close();
-      } catch (_e) {
-        // ignore
+    const now: number = Date.now();
+
+    // Rate limit by IP (Android: rateLimitByIp, 1s)
+    const lastIp: number | undefined = this.lastConnTimeByIp[remoteAddr];
+    if (lastIp !== undefined && (lastIp + KdeClient.CONN_RATE_MS > now)) {
+      console.info('[KDE-MVP] Rate-limited duplicate TCP:', remoteAddr);
+      try { client.close(); } catch (_e) {}
+      return;
+    }
+    this.lastConnTimeByIp[remoteAddr] = now;
+
+    // Outbound in progress — accept reverse connection, cancel outbound
+    if (this.outboundActive) {
+      if (remoteAddr.length > 0 && remoteAddr === this.outboundTargetIp) {
+        console.info('[KDE-MVP] Reverse while outbound — accept, cancel outbound');
+        this.cleanOutboundState();
       }
+      // Don't reject — accept it (Android doesn't reject concurrent)
+    }
+
+    // Session live — don't accept duplicate
+    if (this.sessionLive) {
+      console.info('[KDE-MVP] Session live, drop duplicate');
+      try { client.close(); } catch (_e) {}
       return;
     }
     if (this.handlingIncoming) {
