@@ -74,6 +74,8 @@ export class KdeClient {
   private pairRequestSentForGen: number = -1;
   /** Pair-accept queued — TLS not yet live when peer's pair:true arrived. */
   private pendingPairAccept: boolean = false;
+  /** Peer has requested pairing — UI shows accept/reject. */
+  private pairRequestedByPeer: boolean = false;
   private statusCallback?: (status: KdeStatus) => void;
   private onSessionChange?: (live: boolean, paired: boolean) => void;
   private lineBuffer: string = '';
@@ -1015,6 +1017,9 @@ export class KdeClient {
           });
         } else {
           // Peer requested pairing → show notification (Android: callback.incomingPairRequest)
+          // Peer requested pairing → show notification + enable in-app accept/reject
+          this.pairRequestedByPeer = true;
+          this.notifySessionChange();
           console.info('[KDE-MVP] Peer requested pairing, showing notification');
           AppNotifier.getInstance().notifyPairRequest(
             this.peerDevice?.deviceName ?? '未知设备',
@@ -1480,6 +1485,11 @@ export class KdeClient {
     this.sendPairRequestOnce(this.sessionGen, true);
   }
 
+  /** Whether peer has requested pairing (for UI accept/reject). */
+  public isPairRequestedByPeer(): boolean {
+    return this.pairRequestedByPeer;
+  }
+
   /** Accept incoming pair request (from notification action). */
   public acceptPairing(): void {
     if (!this.isTlsLive()) {
@@ -1490,6 +1500,7 @@ export class KdeClient {
     this.sendTls(accept, () => {});
     this.paired = true;
     this.pairRequestSentForGen = -1;
+    this.pairRequestedByPeer = false;
     if (this.peerDevice) {
       this.trustedDeviceIds.add(this.peerDevice.deviceId);
       this.persistTrust(this.peerDevice).catch((e: Error) => {
@@ -1513,6 +1524,7 @@ export class KdeClient {
     this.sendTls(reject, () => {});
     this.paired = false;
     this.pairRequestSentForGen = -1;
+    this.pairRequestedByPeer = false;
     this.notifySessionChange();
     console.info('[KDE-MVP] Pair request rejected');
   }
@@ -1526,6 +1538,7 @@ export class KdeClient {
     this.sessionLive = false;
     this.handlingIncoming = false;
     this.pairRequestSentForGen = -1;
+    this.pairRequestedByPeer = false;
     this.pendingPairAccept = false;
     this.lineBuffer = '';
     this.peerBattery = null;

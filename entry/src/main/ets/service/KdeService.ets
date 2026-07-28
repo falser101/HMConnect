@@ -297,6 +297,11 @@ export class KdeService {
     this.client.requestPairing();
   }
 
+  /** Whether peer has requested pairing (for UI). */
+  public isPairRequestedByPeer(): boolean {
+    return this.client.isPairRequestedByPeer();
+  }
+
   /** Create a FileSendJob bound to this device session. */
   public createFileSendJob(): FileSendJob {
     return new FileSendJob(this.client);

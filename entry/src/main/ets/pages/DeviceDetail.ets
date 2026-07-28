@@ -2,6 +2,7 @@ import { common } from '@kit.AbilityKit';
 import pasteboard from '@ohos.pasteboard';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { AppSession } from '../app/AppSession';
+import { AppNotifier } from '../common/AppNotifier';
 import { DeviceListItem, KdeStatus, ConnectionState, FileSendInfo } from '../service/KdeTypes';
 import { BatteryHelper } from '../common/BatteryHelper';
 import { goBack, hostContext, routeParams } from '../common/NavUtil';
@@ -464,32 +465,36 @@ struct DeviceDetail {
         }
       })
 
-      // ── Accept / Reject (placeholder for incoming request) ──
-      // Android shows these when RequestedByPeer; grayed out for now
+      // ── Accept / Reject ──
+      // Enabled when peer has requested pairing (Android: RequestedByPeer)
       Row({ space: 8 }) {
         Button($r('app.string.pairing_accept'))
           .layoutWeight(1)
           .height(48)
           .fontSize(15)
           .fontWeight(FontWeight.Medium)
-          .fontColor(UiTheme.textMuted)
-          .backgroundColor(UiTheme.surfaceVariant)
+          .fontColor(Color.White)
+          .backgroundColor(UiTheme.primary)
           .borderRadius(UiTheme.radiusButton)
-          .opacity(0.4)
+          .enabled(this.item !== null && this.item.sessionActive)
+          .opacity(this.item !== null && this.item.sessionActive ? 1 : 0.4)
           .onClick(() => {
-            this.onDisabledTap();
+            this.session.getService().getClient().acceptPairing();
+            AppNotifier.getInstance().cancelPairRequest();
           })
         Button($r('app.string.pairing_reject'))
           .layoutWeight(1)
           .height(48)
           .fontSize(15)
           .fontWeight(FontWeight.Medium)
-          .fontColor(UiTheme.textMuted)
+          .fontColor(UiTheme.onSurface)
           .backgroundColor(UiTheme.surfaceVariant)
           .borderRadius(UiTheme.radiusButton)
-          .opacity(0.4)
+          .enabled(this.item !== null && this.item.sessionActive)
+          .opacity(this.item !== null && this.item.sessionActive ? 1 : 0.4)
           .onClick(() => {
-            this.onDisabledTap();
+            this.session.getService().getClient().rejectPairing();
+            AppNotifier.getInstance().cancelPairRequest();
           })
       }
       .width('100%')
