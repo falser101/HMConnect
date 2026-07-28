@@ -1032,6 +1032,7 @@ export class KdeClient {
         const wasRequesting: boolean = this.pairRequestSentForGen >= 0;
         this.paired = false;
         this.pairRequestSentForGen = -1;
+        this.pairRequestedByPeer = false;
         this.notifySessionChange();
         if (this.peerDevice) {
           this.removeTrust(this.peerDevice.deviceId).catch(() => {});
@@ -1039,8 +1040,14 @@ export class KdeClient {
             // We sent a pair request, PC rejected → show error (Android: pairingFailed)
             this.emit('error', '配对被拒绝');
           } else if (wasPaired) {
-            // Already paired → PC unpaired us silently (Android: unpaired callback, no toast)
-            console.info('[KDE-MVP] Peer unpaired us, trust cleared');
+            // Already paired → PC unpaired us (Android: unpaired callback)
+            // Disconnect TLS so device status resets
+            this.emit('paired', '设备已取消配对', {
+              peerName: this.peerDevice.deviceName,
+              peerDeviceId: this.peerDevice.deviceId
+            });
+            console.info('[KDE-MVP] Peer unpaired us, trust cleared, disconnecting');
+            this.disconnect();
           }
           // else: already NotPaired, ignore (Android: "Ignoring unpair request for already unpaired device")
         }
