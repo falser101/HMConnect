@@ -89,6 +89,8 @@ export class KdeClient {
   /** Local media state for MPRIS receiver (remote controls us). */
   private localPlaying: boolean = false;
   private localVolume: number = 50;
+  /** AVSession for receiving system media keys and reporting state. */
+  private mprisSession: avSession.AVSession | null = null;
   private statusCallback?: (status: KdeStatus) => void;
   private onSessionChange?: (live: boolean, paired: boolean) => void;
   private lineBuffer: string = '';
@@ -381,6 +383,43 @@ export class KdeClient {
         this.localPlaying = false;
     }
     this.sendLocalMprisStatus();
+  }
+
+  // ── AVSession for media controller identity ───────────────
+
+  /** Activate our AVSession so the system treats us as a media controller. */
+  public async setupMprisReceiver(ctx: common.UIAbilityContext): Promise<void> {
+    if (this.mprisSession) {
+      return;
+    }
+    try {
+      this.mprisSession = await avSession.createAVSession(ctx, 'HMConnectMpris', 'audio');
+      await this.mprisSession.activate();
+      await this.mprisSession.setAVPlaybackState({
+        state: avSession.PlaybackState.PLAYBACK_STATE_STOP
+      });
+      // Listen for local media button presses
+      this.mprisSession.on('controlCommand', (cmd: avSession.AVControlCommand) => {
+        console.info('[KDE-MVP] AVSession local controlCommand:', cmd.command);
+        if (cmd.command === 'play') this.localPlaying = true;
+        else if (cmd.command === 'pause') this.localPlaying = false;
+        else if (cmd.command === 'stop') this.localPlaying = false;
+        this.sendLocalMprisStatus();
+      });
+      console.info('[KDE-MVP] MPRIS receiver AVSession activated');
+    } catch (e) {
+      console.warn('[KDE-MVP] setupMprisReceiver failed:', JSON.stringify(e));
+      this.mprisSession = null;
+    }
+  }
+
+  public teardownMprisReceiver(): void {
+    const s = this.mprisSession;
+    this.mprisSession = null;
+    if (s) {
+      try { s.deactivate(); } catch (_e) {}
+      try { s.destroy(); } catch (_e) {}
+    }
   }
 
   /** Send local playback status to remote via kdeconnect.mpris. */
@@ -1208,6 +1247,10 @@ export class KdeClient {
         this.notifySessionChange();
         // Report phone battery as soon as the channel is up (desktop shows it even pre-pair on some builds)
         this.startBatteryReporting();
+        // Register as media controller for remote control
+        if (this.context) {
+          this.setupMprisReceiver(this.context);
+        }
 
         let deviceId: string = peer.deviceId;
         if (this.isTrusted(deviceId) || this.paired) {
@@ -1835,6 +1878,7 @@ export class KdeClient {
     this.lineBuffer = '';
     this.peerBattery = null;
     this.stopBatteryReporting();
+    this.teardownMprisReceiver();
     FindMyPhoneHelper.getInstance().stop();
     this.notifySessionChange();
     this.closeTlsChannel();
