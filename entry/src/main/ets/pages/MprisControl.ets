@@ -1,7 +1,7 @@
 import { common } from '@kit.AbilityKit';
 import { AppSession } from '../app/AppSession';
 import { MprisPlayerState } from '../service/KdeTypes';
-import { KdeClient } from '../service/KdeClient';
+import { DeviceSession } from '../service/DeviceSession';
 import { goBack, hostContext, routeParams } from '../common/NavUtil';
 import { UiTheme } from '../common/ui/UiTheme';
 
@@ -16,15 +16,22 @@ struct MprisControlPage {
   @StorageProp('navBarHeight') navBarHeight: number = 0;
   @State player: MprisPlayerState | null = null;
   @State seekValue: number = 0;
-  private client: KdeClient | null = null;
+  private client: DeviceSession | null = null;
   private posTimer: number = -1;
 
   aboutToAppear(): void {
     let params = routeParams(this.getUIContext()) as MprisRouteParams;
     if (params && params.deviceId) {
       this.client = AppSession.getInstance().getService().getClientForDevice(params.deviceId);
+      AppSession.getInstance().getService().getClient()
+        .setMprisChangeListenerForDevice(params.deviceId, (p: MprisPlayerState | null) => {
+          this.player = p;
+          if (p) {
+            this.seekValue = p.pos;
+          }
+        });
     } else {
-      this.client = AppSession.getInstance().getService().getClient();
+      this.client = AppSession.getInstance().getService().getClient().getClient();
     }
     if (this.client) {
       this.client.setMprisChangeListener((p: MprisPlayerState | null) => {
@@ -54,7 +61,7 @@ struct MprisControlPage {
     }
   }
 
-  private getCl(): KdeClient | null {
+  private getCl(): DeviceSession | null {
     return this.client;
   }
 

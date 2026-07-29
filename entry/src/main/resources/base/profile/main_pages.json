@@ -5,6 +5,7 @@
     "pages/Settings",
     "pages/About",
     "pages/FindMyPhone",
-    "pages/MprisControl"
+    "pages/MprisControl",
+    "pages/PluginSettings"
   ]
 }

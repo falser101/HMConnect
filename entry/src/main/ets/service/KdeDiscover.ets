@@ -29,8 +29,14 @@ export class KdeDiscover {
     sanitizeDeviceName(deviceInfo.marketName || deviceInfo.productModel || 'HarmonyOS Device');
   private running: boolean = false;
   private broadcastEnabled: boolean = false;
-  /** When true, skip periodic announce (already paired / session live). */
+  /** When true, skip periodic announce entirely. */
   private announcePaused: boolean = false;
+  /**
+   * Peer IPs that already have a live TLS session.
+   * Periodic unicast to these IPs is skipped so we don't poke them into reverse-connect.
+   * Broadcast 255.255.255.255 still runs for new-device discovery (hub drops dup TCP if live).
+   */
+  private connectedPeerIps: Set<string> = new Set();
 
   public setTcpPort(port: number): void {
     this.tcpPort = port;
@@ -40,6 +46,16 @@ export class KdeDiscover {
   public setAnnouncePaused(paused: boolean): void {
     this.announcePaused = paused;
     console.info(`[KDE-MVP] UDP announce paused=${paused}`);
+  }
+
+  /** Update skip-list of already-connected peer IPs (from KdeClient hub). */
+  public setConnectedPeerIps(ips: string[]): void {
+    this.connectedPeerIps.clear();
+    for (let i = 0; i < ips.length; i++) {
+      if (ips[i] && ips[i].length > 0) {
+        this.connectedPeerIps.add(ips[i]);
+      }
+    }
   }
 
   public getMyDeviceName(): string {
@@ -171,13 +187,18 @@ export class KdeDiscover {
 
     let destinations: string[] = [];
     if (targetIp) {
+      // Explicit unicast (user "connect") always allowed even if already connected
       destinations.push(targetIp);
     } else {
       if (this.broadcastEnabled) {
         destinations.push('255.255.255.255');
       }
-      // Always unicast to known peers (works even when broadcast is denied)
+      // Unicast to known peers — but skip IPs that already have a live TLS session
+      // (prevents 8s reverse-connect storms that used to Quiet-replace live links)
       this.discoveredDevices.forEach((d: KdeDevice) => {
+        if (this.connectedPeerIps.has(d.ip)) {
+          return;
+        }
         if (destinations.indexOf(d.ip) < 0) {
           destinations.push(d.ip);
         }

@@ -14,6 +14,11 @@ export class AppNotifier {
   private nextId: number = 2000;
   /** Fixed id so find-my-phone can replace / cancel the same banner. */
   private static readonly FIND_PHONE_NOTIFY_ID: number = 1901;
+  /**
+   * Fallback notification id for continuous-task progress when system did not
+   * return a ContinuousTaskNotification id (enum startBackgroundRunning path).
+   */
+  public static readonly PERSISTENT_NOTIFY_ID_FOR_PROGRESS: number = 1800;
 
   public static getInstance(): AppNotifier {
     if (!AppNotifier.instance) {

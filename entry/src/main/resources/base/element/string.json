@@ -209,12 +209,28 @@
       "value": "请求配对"
     },
     {
+      "name": "pairing_requested_title",
+      "value": "已请求配对"
+    },
+    {
+      "name": "pairing_requested_by_peer_title",
+      "value": "收到配对请求"
+    },
+    {
       "name": "pairing_accept",
       "value": "接受"
     },
     {
       "name": "pairing_reject",
       "value": "拒绝"
+    },
+    {
+      "name": "cancel_pairing",
+      "value": "取消配对请求"
+    },
+    {
+      "name": "pairing_waiting_peer",
+      "value": "请在对方设备上接受配对…"
     },
     {
       "name": "unreachable_message",
@@ -283,6 +299,62 @@
     {
       "name": "file_send_failed",
       "value": "发送失败"
+    },
+    {
+      "name": "pref_plugin_clipboard",
+      "value": "剪贴板同步"
+    },
+    {
+      "name": "pref_plugin_clipboard_desc",
+      "value": "在设备之间共享剪贴板内容"
+    },
+    {
+      "name": "pref_plugin_share",
+      "value": "共享与接收"
+    },
+    {
+      "name": "pref_plugin_share_desc",
+      "value": "在设备之间共享文件和链接"
+    },
+    {
+      "name": "pref_plugin_mpris",
+      "value": "多媒体控制"
+    },
+    {
+      "name": "pref_plugin_mpris_desc",
+      "value": "远程控制媒体播放器"
+    },
+    {
+      "name": "pref_plugin_ping",
+      "value": "Ping"
+    },
+    {
+      "name": "pref_plugin_ping_desc",
+      "value": "发送和接收 Ping"
+    },
+    {
+      "name": "pref_plugin_battery",
+      "value": "电池状态"
+    },
+    {
+      "name": "pref_plugin_battery_desc",
+      "value": "定期报告电池状态"
+    },
+    {
+      "name": "pref_plugin_findmyphone",
+      "value": "查找设备"
+    },
+    {
+      "name": "pref_plugin_findmyphone_desc",
+      "value": "让设备响铃以便查找，或响铃远程设备"
+    },
+    {
+      "name": "plugin_disabled_toast",
+      "value": "该插件已对此设备关闭"
+    },
+    {
+      "name": "protocol_version_newer",
+      "value": "此设备使用较新版本的协议"
     }
   ]
 }

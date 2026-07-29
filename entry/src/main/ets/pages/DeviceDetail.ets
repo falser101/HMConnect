@@ -3,13 +3,22 @@ import pasteboard from '@ohos.pasteboard';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { AppSession } from '../app/AppSession';
 import { AppNotifier } from '../common/AppNotifier';
-import { DeviceListItem, KdeStatus, ConnectionState, FileSendInfo } from '../service/KdeTypes';
+import { DeviceListItem, KdeStatus, ConnectionState, FileSendInfo, PairUiState } from '../service/KdeTypes';
 import { BatteryHelper } from '../common/BatteryHelper';
-import { goBack, hostContext, routeParams } from '../common/NavUtil';
+import { goBack, hostContext, pushPage, routeParams } from '../common/NavUtil';
 import { UiTheme } from '../common/ui/UiTheme';
 import { KdeIcon, KdeIconRes } from '../common/ui/KdeIcons';
 import { KdeTopBar, KdePrimaryButton } from '../common/ui/KdeWidgets';
 import { FileSendJob } from '../service/FileSendJob';
+import {
+  PLUGIN_CLIPBOARD,
+  PLUGIN_FIND_MY_PHONE,
+  PLUGIN_MPRIS,
+  PLUGIN_PING,
+  PLUGIN_SHARE,
+  pluginKeyForUiButton
+} from '../service/PluginRegistry';
+import { PluginSettingsStore } from '../store/PluginSettingsStore';
 
 interface DeviceDetailParams {
   deviceId: string;
@@ -23,6 +32,12 @@ interface PluginButton {
   disabled: boolean;
   onTap?: () => void;
   pluginKey?: string;
+}
+
+/** Params for PluginSettings page */
+interface PluginSettingsParams {
+  deviceId: string;
+  deviceName: string;
 }
 
 @Entry
@@ -48,14 +63,21 @@ struct DeviceDetail {
   @State fileSending: boolean = false;
   @State fileProgress: number = 0;
   @State fileProgressLabel: string = '';
+  /** Bumps when plugin enable state changes so the grid refreshes. */
+  @State pluginRev: number = 0;
+  @State visiblePluginBtns: PluginButton[] = [];
+  /** Live pairing state (Android PairingHandler.PairState). */
+  @State pairState: PairUiState = 'not_paired';
+  private autoConnectTried: boolean = false;
 
   private deviceSubId: number = -1;
   private statusSubId: number = -1;
+  private pluginSubId: number = -1;
   private session: AppSession = AppSession.getInstance();
 
   // ── Plugin button definitions (matches Android getUiButtons) ──
-  // disabled=true → grayed out, tap shows "coming soon" toast
-  private pluginBtns: PluginButton[] = [
+  // disabled=true → not implemented (coming soon); user-disabled plugins are hidden
+  private allPluginBtns: PluginButton[] = [
     { label: $r('app.string.plugin_send_files'), symbol: KdeIconRes.fileUpload(), disabled: false, onTap: () => { this.onSendFiles(); }, pluginKey: 'send_files' },
     { label: $r('app.string.plugin_multimedia_control'), symbol: KdeIconRes.music(), disabled: false, onTap: () => { this.openMpris(); }, pluginKey: 'multimedia' },
     { label: $r('app.string.plugin_remote_input'), symbol: KdeIconRes.touchpad(), disabled: true, pluginKey: 'remote_input' },
@@ -74,12 +96,22 @@ struct DeviceDetail {
     let ctx: common.UIAbilityContext | undefined = hostContext(this.getUIContext());
     if (ctx) {
       this.session.ensureStarted(ctx).then(() => {
+        return PluginSettingsStore.getInstance().ensureDeviceLoaded(this.deviceId);
+      }).then(() => {
         this.refreshItem();
+        this.refreshPluginButtons();
         this.applyStatus(this.session.getLastStatus());
+        // Android: opening detail dismisses pairing notification
+        AppNotifier.getInstance().cancelPairRequest();
+        this.maybeAutoConnect();
         // Auto-trigger sendFile from notification action
         if (params && params.action) {
           setTimeout(() => { this.handleNotificationAction(params.action!); }, 500);
         }
+      });
+    } else {
+      PluginSettingsStore.getInstance().ensureDeviceLoaded(this.deviceId).then(() => {
+        this.refreshPluginButtons();
       });
     }
     this.ensureSubscriptions();
@@ -96,7 +128,12 @@ struct DeviceDetail {
     this.session.attachUiContext(this.getUIContext());
     this.ensureSubscriptions();
     this.refreshItem();
+    PluginSettingsStore.getInstance().ensureDeviceLoaded(this.deviceId).then(() => {
+      this.refreshPluginButtons();
+    });
     this.applyStatus(this.session.getLastStatus());
+    AppNotifier.getInstance().cancelPairRequest();
+    this.maybeAutoConnect();
   }
 
   aboutToDisappear() {
@@ -107,11 +144,18 @@ struct DeviceDetail {
     if (this.deviceSubId < 0) {
       this.deviceSubId = this.session.subscribeDevices(() => {
         this.refreshItem();
+        // If TLS just came up and we were waiting, stay on pairing UI until trusted
+        this.refreshPairState();
       });
     }
     if (this.statusSubId < 0) {
       this.statusSubId = this.session.subscribeStatus((s: KdeStatus) => {
         this.applyStatus(s);
+      });
+    }
+    if (this.pluginSubId < 0) {
+      this.pluginSubId = PluginSettingsStore.getInstance().subscribe(() => {
+        this.refreshPluginButtons();
       });
     }
   }
@@ -125,6 +169,40 @@ struct DeviceDetail {
       this.session.unsubscribeStatus(this.statusSubId);
       this.statusSubId = -1;
     }
+    if (this.pluginSubId >= 0) {
+      PluginSettingsStore.getInstance().unsubscribe(this.pluginSubId);
+      this.pluginSubId = -1;
+    }
+  }
+
+  /** Hide user-disabled plugins (Android: only loadedPlugins show UI buttons). */
+  private refreshPluginButtons(): void {
+    const store = PluginSettingsStore.getInstance();
+    const out: PluginButton[] = [];
+    for (let i = 0; i < this.allPluginBtns.length; i++) {
+      const btn = this.allPluginBtns[i];
+      const uiKey = btn.pluginKey ?? '';
+      const pluginKey = pluginKeyForUiButton(uiKey);
+      if (pluginKey !== null && !store.isEnabled(this.deviceId, pluginKey)) {
+        continue;
+      }
+      out.push(btn);
+    }
+    this.visiblePluginBtns = out;
+    this.pluginRev = this.pluginRev + 1;
+  }
+
+  private isPluginOn(pluginKey: string): boolean {
+    return PluginSettingsStore.getInstance().isEnabled(this.deviceId, pluginKey);
+  }
+
+  private openPluginSettings(): void {
+    this.closeMenu();
+    const params: PluginSettingsParams = {
+      deviceId: this.deviceId,
+      deviceName: this.item !== null ? this.item.deviceName : ''
+    };
+    pushPage(this.getUIContext(), 'pages/PluginSettings', params);
   }
 
   private refreshItem(): void {
@@ -133,6 +211,27 @@ struct DeviceDetail {
     }
     let found = this.session.getService().getDeviceById(this.deviceId);
     this.item = found ?? null;
+    this.refreshPairState();
+  }
+
+  private refreshPairState(): void {
+    if (this.deviceId.length === 0) {
+      this.pairState = 'not_paired';
+      return;
+    }
+    const fromSession = this.session.getService().getPairStateFor(this.deviceId);
+    if (this.item !== null && this.item.trusted) {
+      this.pairState = 'paired';
+      return;
+    }
+    // Prefer live session state; fall back to list field
+    if (fromSession !== 'not_paired' || this.item?.sessionActive) {
+      this.pairState = fromSession;
+    } else if (this.item?.pairState) {
+      this.pairState = this.item.pairState;
+    } else {
+      this.pairState = 'not_paired';
+    }
   }
 
   private applyStatus(s: KdeStatus): void {
@@ -142,6 +241,26 @@ struct DeviceDetail {
     }
     this.statusState = s.state;
     this.statusText = s.message;
+    this.refreshPairState();
+  }
+
+  /**
+   * Android: discovery already has TLS (isReachable). Here we auto-start TLS
+   * when opening detail so user only needs "Request pairing" (one-step feel).
+   */
+  private maybeAutoConnect(): void {
+    if (this.autoConnectTried || !this.item) {
+      return;
+    }
+    if (this.item.sessionActive || this.isConnecting()) {
+      return;
+    }
+    // Need a known address to connect
+    if (!this.item.online || this.item.ip.length === 0) {
+      return;
+    }
+    this.autoConnectTried = true;
+    this.session.getService().connectListItem(this.item);
   }
 
   // ── Actions ──────────────────────────────────────────────
@@ -151,17 +270,51 @@ struct DeviceDetail {
       return;
     }
     const svc = this.session.getService();
-    // If already connected (TLS live), request pairing instead of reconnecting
+    // TLS live → request pairing (Android: only "Request pairing")
     if (this.item.sessionActive) {
-      svc.requestPairing();
+      svc.requestPairingFor(this.item.deviceId);
     } else {
+      this.autoConnectTried = true;
       svc.connectListItem(this.item);
     }
   }
 
+  private onCancelPairing(): void {
+    this.closeMenu();
+    if (this.deviceId.length > 0) {
+      this.session.getService().cancelPairingFor(this.deviceId);
+    }
+    AppNotifier.getInstance().cancelPairRequest();
+    this.refreshPairState();
+  }
+
+  private onAcceptPairing(): void {
+    if (this.deviceId.length > 0) {
+      this.session.getService().getClient().acceptPairingFor(this.deviceId);
+    } else {
+      this.session.getService().getClient().acceptPairing();
+    }
+    AppNotifier.getInstance().cancelPairRequest();
+    this.refreshPairState();
+  }
+
+  private onRejectPairing(): void {
+    if (this.deviceId.length > 0) {
+      this.session.getService().getClient().rejectPairingFor(this.deviceId);
+    } else {
+      this.session.getService().getClient().rejectPairing();
+    }
+    AppNotifier.getInstance().cancelPairRequest();
+    this.refreshPairState();
+  }
+
   private onDisconnect(): void {
     this.closeMenu();
-    this.session.getService().disconnect();
+    if (this.deviceId.length > 0) {
+      this.session.getService().disconnectDevice(this.deviceId);
+    } else {
+      this.session.getService().disconnect();
+    }
   }
 
   private onUnpair(): void {
@@ -180,16 +333,36 @@ struct DeviceDetail {
 
   private onPing(): void {
     this.closeMenu();
-    this.session.getService().sendPing();
+    if (!this.isPluginOn(PLUGIN_PING)) {
+      this.showToast($r('app.string.plugin_disabled_toast'));
+      return;
+    }
+    if (this.deviceId.length > 0) {
+      this.session.getService().sendPingTo(this.deviceId);
+    } else {
+      this.session.getService().sendPing();
+    }
     this.showToast($r('app.string.toast_ping_sent'));
   }
 
   private onRing(): void {
     this.closeMenu();
-    this.session.getService().sendRing();
+    if (!this.isPluginOn(PLUGIN_FIND_MY_PHONE)) {
+      this.showToast($r('app.string.plugin_disabled_toast'));
+      return;
+    }
+    if (this.deviceId.length > 0) {
+      this.session.getService().sendRingTo(this.deviceId);
+    } else {
+      this.session.getService().sendRing();
+    }
   }
 
   private openMpris(): void {
+    if (!this.isPluginOn(PLUGIN_MPRIS)) {
+      this.showToast($r('app.string.plugin_disabled_toast'));
+      return;
+    }
     const ctx = this.getUIContext();
     if (ctx && this.item) {
       ctx.getRouter().pushUrl({
@@ -200,6 +373,10 @@ struct DeviceDetail {
   }
 
   private async onSendFiles(): Promise<void> {
+    if (!this.isPluginOn(PLUGIN_SHARE)) {
+      this.showToast($r('app.string.plugin_disabled_toast'));
+      return;
+    }
     try {
       // ── Open DocumentViewPicker ──
       const documentPicker: picker.DocumentViewPicker = new picker.DocumentViewPicker();
@@ -232,8 +409,10 @@ struct DeviceDetail {
         return;
       }
 
-      // ── Build job ──
-      const job: FileSendJob = this.session.getService().createFileSendJob();
+      // ── Build job (bound to this device session) ──
+      const job: FileSendJob = this.deviceId.length > 0
+        ? this.session.getService().createFileSendJobFor(this.deviceId)
+        : this.session.getService().createFileSendJob();
       for (const info of fileInfos) {
         job.addFile(info);
       }
@@ -273,6 +452,10 @@ struct DeviceDetail {
 
   private trySendClipboard(): void {
     this.closeMenu();
+    if (!this.isPluginOn(PLUGIN_CLIPBOARD)) {
+      this.showToast($r('app.string.plugin_disabled_toast'));
+      return;
+    }
     this.showPasteOverlay = true;
   }
 
@@ -307,15 +490,20 @@ struct DeviceDetail {
   }
 
   private isPairingUi(): boolean {
-    return this.item !== null && !this.item.trusted;
+    // Hide pairing once session reports paired (trust persist may lag one frame)
+    return this.item !== null && !this.item.trusted && this.pairState !== 'paired';
   }
 
   private isUnreachableUi(): boolean {
-    return this.item !== null && this.item.trusted && !this.item.online && !this.item.sessionActive;
+    return this.item !== null &&
+      (this.item.trusted || this.pairState === 'paired') &&
+      !this.item.online && !this.item.sessionActive;
   }
 
   private isPluginsUi(): boolean {
-    return this.item !== null && this.item.trusted && (this.item.online || this.item.sessionActive);
+    return this.item !== null &&
+      (this.item.trusted || this.pairState === 'paired') &&
+      (this.item.online || this.item.sessionActive);
   }
 
   private isConnecting(): boolean {
@@ -379,37 +567,50 @@ struct DeviceDetail {
         })
 
       Column() {
-        // ── Plugin menu entries (Android: getUiMenuEntries) ──
-        this.MenuItem($r('app.string.plugin_send_clipboard'), () => {
-          this.trySendClipboard();
-        }, false, false)
+        // Trusted + online: plugin menu entries (Android getUiMenuEntries)
+        if (this.item !== null && this.item.trusted && this.item.sessionActive) {
+          if (this.isPluginOn(PLUGIN_CLIPBOARD)) {
+            this.MenuItem($r('app.string.plugin_send_clipboard'), () => {
+              this.trySendClipboard();
+            }, false, false)
+          }
+          if (this.isPluginOn(PLUGIN_PING)) {
+            this.MenuItem($r('app.string.menu_send_ping'), () => {
+              this.onPing();
+            }, false, false)
+          }
+          if (this.isPluginOn(PLUGIN_FIND_MY_PHONE)) {
+            this.MenuItem($r('app.string.menu_ring'), () => {
+              this.onRing();
+            }, false, false)
+          }
+          Divider().color(UiTheme.divider).width('100%')
+          this.MenuItem($r('app.string.menu_plugin_settings'), () => {
+            this.openPluginSettings();
+          }, false, false)
+        }
 
-        this.MenuItem($r('app.string.menu_send_ping'), () => {
-          this.onPing();
-        }, false, false)
+        // Encryption when TLS is live (Android: reachable)
+        if (this.item !== null && this.item.sessionActive) {
+          this.MenuItem($r('app.string.menu_encryption_info'), () => {
+            this.onEncryptionInfo();
+          }, false, false)
+        }
 
-        this.MenuItem($r('app.string.menu_ring'), () => {
-          this.onRing();
-        }, false, false)
+        // Cancel in-flight pairing (Android: cancel_pairing)
+        if (this.pairState === 'requested' || this.pairState === 'requested_by_peer') {
+          this.MenuItem($r('app.string.cancel_pairing'), () => {
+            this.onCancelPairing();
+          }, false, false)
+        }
 
-        Divider().color(UiTheme.divider).width('100%')
-
-        // ── Plugin settings ──
-        this.MenuItem($r('app.string.menu_plugin_settings'), () => {
-          this.onDisabledTap();
-        }, false, true)
-
-        // ── Encryption Info ──
-        this.MenuItem($r('app.string.menu_encryption_info'), () => {
-          this.onEncryptionInfo();
-        }, false, false)
-
-        Divider().color(UiTheme.divider).width('100%')
-
-        // ── Unpair ──
-        this.MenuItem($r('app.string.menu_unpair'), () => {
-          this.onUnpair();
-        }, true, false)
+        // Unpair only when trusted (Android)
+        if (this.item !== null && this.item.trusted) {
+          Divider().color(UiTheme.divider).width('100%')
+          this.MenuItem($r('app.string.menu_unpair'), () => {
+            this.onUnpair();
+          }, true, false)
+        }
       }
       .width(220)
       .backgroundColor(UiTheme.cardBg)
@@ -424,12 +625,23 @@ struct DeviceDetail {
     .height('100%')
   }
 
-  // ── Pairing panel (Android view_pair_request.xml) ────────
+  // ── Pairing panel (Android DevicePairingScreen / view_pair_request) ──
+
+  private pairingTitle(): ResourceStr {
+    if (this.pairState === 'requested') {
+      return $r('app.string.pairing_requested_title');
+    }
+    if (this.pairState === 'requested_by_peer') {
+      return $r('app.string.pairing_requested_by_peer_title');
+    }
+    return $r('app.string.pairing_not_paired_title');
+  }
 
   @Builder
   PairingPanel() {
     Column() {
-      Text($r('app.string.pairing_not_paired_title'))
+      // Title reflects pair state (Android: pair_message)
+      Text(this.pairingTitle())
         .fontSize(UiTheme.titleMd)
         .fontWeight(FontWeight.Medium)
         .fontColor(UiTheme.onSurface)
@@ -442,8 +654,8 @@ struct DeviceDetail {
         .width('100%')
         .margin({ bottom: 16 })
 
-      // ── Connecting / TLS ──
-      if (this.isConnecting()) {
+      // ── TLS connecting (before link is up) ──
+      if (this.isConnecting() && this.pairState === 'not_paired') {
         Row() {
           KdeIcon({ symbol: KdeIconRes.key(), iconSize: 20, color: UiTheme.iconTint })
           Text(this.statusText.length > 0 ? this.statusText : $r('app.string.pairing_connecting'))
@@ -462,58 +674,78 @@ struct DeviceDetail {
           .margin({ bottom: 16 })
       }
 
-      // ── Error ──
-      if (this.hasError()) {
-        Text(this.statusText)
-          .fontSize(13)
-          .fontColor(UiTheme.danger)
+      // ── Requested: waiting for peer (Android PairState.Requested) ──
+      if (this.pairState === 'requested') {
+        Text($r('app.string.pairing_waiting_peer'))
+          .fontSize(14)
+          .fontColor(UiTheme.onSurfaceVariant)
           .width('100%')
           .margin({ bottom: 12 })
+
+        LoadingProgress()
+          .width(36)
+          .height(36)
+          .color(UiTheme.primary)
+          .margin({ bottom: 16 })
+
+        KdePrimaryButton({
+          label: $r('app.string.cancel_pairing'),
+          onTap: () => {
+            this.onCancelPairing();
+          }
+        })
       }
 
-      // ── Connect / Request pairing button ──
-      KdePrimaryButton({
-        label: this.item?.sessionActive ? $r('app.string.pairing_request_button') : $r('app.string.plugins_connect_button'),
-        isEnabled: !this.isConnecting() || this.hasError(),
-        onTap: () => {
-          this.onConnectOrPair();
+      // ── RequestedByPeer: accept / reject only ──
+      if (this.pairState === 'requested_by_peer') {
+        Row({ space: 8 }) {
+          Button($r('app.string.pairing_accept'))
+            .layoutWeight(1)
+            .height(48)
+            .fontSize(15)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(Color.White)
+            .backgroundColor(UiTheme.primary)
+            .borderRadius(UiTheme.radiusButton)
+            .onClick(() => {
+              this.onAcceptPairing();
+            })
+          Button($r('app.string.pairing_reject'))
+            .layoutWeight(1)
+            .height(48)
+            .fontSize(15)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(UiTheme.onSurface)
+            .backgroundColor(UiTheme.surfaceVariant)
+            .borderRadius(UiTheme.radiusButton)
+            .onClick(() => {
+              this.onRejectPairing();
+            })
         }
-      })
-
-      // ── Accept / Reject ──
-      // Enabled when peer has requested pairing (Android: RequestedByPeer)
-      Row({ space: 8 }) {
-        Button($r('app.string.pairing_accept'))
-          .layoutWeight(1)
-          .height(48)
-          .fontSize(15)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(Color.White)
-          .backgroundColor(UiTheme.primary)
-          .borderRadius(UiTheme.radiusButton)
-          .enabled(this.item !== null && this.item.sessionActive)
-          .opacity(this.item !== null && this.item.sessionActive ? 1 : 0.4)
-          .onClick(() => {
-            this.session.getService().getClient().acceptPairing();
-            AppNotifier.getInstance().cancelPairRequest();
-          })
-        Button($r('app.string.pairing_reject'))
-          .layoutWeight(1)
-          .height(48)
-          .fontSize(15)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(UiTheme.onSurface)
-          .backgroundColor(UiTheme.surfaceVariant)
-          .borderRadius(UiTheme.radiusButton)
-          .enabled(this.item !== null && this.item.sessionActive)
-          .opacity(this.item !== null && this.item.sessionActive ? 1 : 0.4)
-          .onClick(() => {
-            this.session.getService().getClient().rejectPairing();
-            AppNotifier.getInstance().cancelPairRequest();
-          })
+        .width('100%')
+        .margin({ top: 4 })
       }
-      .width('100%')
-      .margin({ top: 12 })
+
+      // ── NotPaired: single primary action (auto-connect + request pair) ──
+      if (this.pairState === 'not_paired' && !this.isConnecting()) {
+        if (this.hasError()) {
+          Text(this.statusText)
+            .fontSize(13)
+            .fontColor(UiTheme.danger)
+            .width('100%')
+            .margin({ bottom: 12 })
+        }
+        KdePrimaryButton({
+          // Android has only "Request pairing"; show Connect only if TLS not up yet
+          label: this.item?.sessionActive
+            ? $r('app.string.pairing_request_button')
+            : $r('app.string.plugins_connect_button'),
+          isEnabled: true,
+          onTap: () => {
+            this.onConnectOrPair();
+          }
+        })
+      }
     }
     .width('100%')
     .padding(16)
@@ -604,7 +836,7 @@ struct DeviceDetail {
 
   @Builder
   PluginCard(btn: PluginButton) {
-    // Show progress card when file sending is active for the send_files plugin
+    // Show progress card when file sending is active for the share plugin
     if (this.fileSending && btn.pluginKey === 'send_files') {
       this.FileSendProgress()
     } else {
@@ -652,7 +884,7 @@ struct DeviceDetail {
   @Builder
   PluginGrid() {
     Column() {
-      ForEach(this.pluginBtns, (btn: PluginButton, index: number) => {
+      ForEach(this.visiblePluginBtns, (btn: PluginButton, index: number) => {
         if (index % 2 === 0) {
           Row({ space: 8 }) {
             Column() {
@@ -660,9 +892,9 @@ struct DeviceDetail {
             }
             .layoutWeight(1)
 
-            if (index + 1 < this.pluginBtns.length) {
+            if (index + 1 < this.visiblePluginBtns.length) {
               Column() {
-                this.PluginCard(this.pluginBtns[index + 1])
+                this.PluginCard(this.visiblePluginBtns[index + 1])
               }
               .layoutWeight(1)
             } else {
@@ -672,7 +904,7 @@ struct DeviceDetail {
           .width('100%')
           .padding({ bottom: 8 })
         }
-      }, (btn: PluginButton, index: number) => `pb_${index}`)
+      }, (btn: PluginButton, index: number) => `pb_${this.pluginRev}_${btn.pluginKey ?? index}`)
     }
     .width('100%')
     .padding({ left: 16, right: 16, top: 8 })
@@ -852,7 +1084,11 @@ struct DeviceDetail {
               }
               const text = pasteData.getPrimaryText();
               if (text && text.trim().length > 0) {
-                this.session.getService().sendClipboardText(text.trim());
+                if (this.deviceId.length > 0) {
+                  this.session.getService().sendClipboardTextTo(this.deviceId, text.trim());
+                } else {
+                  this.session.getService().sendClipboardText(text.trim());
+                }
                 this.showToast($r('app.string.clipboard_send_toast'));
               }
               this.showPasteOverlay = false;
@@ -883,7 +1119,13 @@ struct DeviceDetail {
           title: this.item !== null ? this.item.deviceName : $r('app.string.device_detail_title'),
           subtitle: this.toolbarSubtitle(),
           showBack: true,
-          showOverflow: this.item !== null && this.item.trusted,
+          // Overflow when trusted, mid-pairing, or TLS live (encryption info)
+          showOverflow: this.item !== null && (
+            this.item.trusted ||
+            this.item.sessionActive ||
+            this.pairState === 'requested' ||
+            this.pairState === 'requested_by_peer'
+          ),
           onBack: () => {
             goBack(this.getUIContext());
           },

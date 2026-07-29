@@ -1,6 +1,6 @@
 import { common } from '@kit.AbilityKit';
 import { AppSession } from '../app/AppSession';
-import { DeviceListItem, KdeStatus } from '../service/KdeTypes';
+import { DeviceListItem, KdeStatus, KDE_PROTOCOL_VERSION } from '../service/KdeTypes';
 import { FindMyPhoneHelper } from '../common/FindMyPhoneHelper';
 import { DeviceDetailRouteParams, hostContext, pushPage } from '../common/NavUtil';
 import { UiTheme } from '../common/ui/UiTheme';
@@ -151,16 +151,15 @@ struct Index {
     pushPage(this.getUIContext(), 'pages/DeviceDetail', params);
   }
 
-  /** Card subtitle: prefer statusLabel; offline error in red via KdeDeviceCard. */
-  private deviceSummary(item: DeviceListItem): string {
-    if (!item.online && item.trusted && !item.sessionActive) {
-      return '设备不可及';
-    }
-    if (item.statusLabel.length > 0) {
-      return item.statusLabel;
-    }
-    if (item.status === 'connecting') {
-      return '连接中…';
+  /**
+   * Card subtitle — Android PairingScreen only shows device name;
+   * optional red summary is solely protocol_version_newer (never 已连接/已配对).
+   * Returns ResourceStr so protocol warning can use string resources.
+   */
+  private deviceSummary(item: DeviceListItem): ResourceStr {
+    // Android DeviceExtensions: summaryRes = protocol_version_newer if peer is newer
+    if (item.protocolVersion > 0 && item.protocolVersion > KDE_PROTOCOL_VERSION) {
+      return $r('app.string.protocol_version_newer');
     }
     return '';
   }
@@ -425,7 +424,7 @@ struct Index {
                 })
               }
             }, (item: DeviceListItem) =>
-              `c_${item.deviceId}_${item.status}_${item.online ? 1 : 0}_${item.sessionActive ? 1 : 0}_${item.statusLabel}`)
+              `c_${item.deviceId}_${item.status}_${item.online ? 1 : 0}_${item.sessionActive ? 1 : 0}`)
 
             // —— 可用的设备 ——
             if (this.availableList.length > 0) {

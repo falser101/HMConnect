@@ -169,12 +169,28 @@
       "value": "Request pairing"
     },
     {
+      "name": "pairing_requested_title",
+      "value": "Pair requested"
+    },
+    {
+      "name": "pairing_requested_by_peer_title",
+      "value": "Pairing requested"
+    },
+    {
       "name": "pairing_accept",
       "value": "Accept"
     },
     {
       "name": "pairing_reject",
       "value": "Reject"
+    },
+    {
+      "name": "cancel_pairing",
+      "value": "Cancel pairing"
+    },
+    {
+      "name": "pairing_waiting_peer",
+      "value": "Accept the request on the other device…"
     },
     {
       "name": "unreachable_message",
@@ -243,6 +259,62 @@
     {
       "name": "file_send_failed",
       "value": "Send failed"
+    },
+    {
+      "name": "pref_plugin_clipboard",
+      "value": "Clipboard sync"
+    },
+    {
+      "name": "pref_plugin_clipboard_desc",
+      "value": "Share the clipboard content"
+    },
+    {
+      "name": "pref_plugin_share",
+      "value": "Share and receive"
+    },
+    {
+      "name": "pref_plugin_share_desc",
+      "value": "Share files and URLs between devices"
+    },
+    {
+      "name": "pref_plugin_mpris",
+      "value": "Multimedia controls"
+    },
+    {
+      "name": "pref_plugin_mpris_desc",
+      "value": "Provides a remote control for your media player"
+    },
+    {
+      "name": "pref_plugin_ping",
+      "value": "Ping"
+    },
+    {
+      "name": "pref_plugin_ping_desc",
+      "value": "Send and receive pings"
+    },
+    {
+      "name": "pref_plugin_battery",
+      "value": "Battery report"
+    },
+    {
+      "name": "pref_plugin_battery_desc",
+      "value": "Periodically report battery status"
+    },
+    {
+      "name": "pref_plugin_findmyphone",
+      "value": "Find device"
+    },
+    {
+      "name": "pref_plugin_findmyphone_desc",
+      "value": "Ring this device to find it, or ring the remote device"
+    },
+    {
+      "name": "plugin_disabled_toast",
+      "value": "This plugin is disabled for this device"
+    },
+    {
+      "name": "protocol_version_newer",
+      "value": "This device uses a newer protocol version"
     }
   ]
 }

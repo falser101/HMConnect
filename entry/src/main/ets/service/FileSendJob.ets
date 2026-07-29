@@ -5,13 +5,13 @@ import {
   PACKET_TYPE_SHARE_REQUEST_UPDATE,
   serializePacket
 } from './KdeTypes';
-import { KdeClient } from './KdeClient';
+import { DeviceSession } from './DeviceSession';
 
 /**
  * Queued file-send job — mirrors Android CompositeUploadFileJob.
  *
  * Usage:
- *   const job = new FileSendJob(client);
+ *   const job = new FileSendJob(session);
  *   job.addFile({ uri, displayName, size, lastModified });
  *   await job.run((overallPercent, currentFileName) => { ... });
  *   job.cancel(); // from UI
@@ -20,9 +20,9 @@ export class FileSendJob {
   private files: FileSendInfo[] = [];
   private totalSize: number = 0;
   private cancelled: boolean = false;
-  private client: KdeClient;
+  private client: DeviceSession;
 
-  constructor(client: KdeClient) {
+  constructor(client: DeviceSession) {
     this.client = client;
   }
 

@@ -107,23 +107,23 @@ export default class EntryAbility extends UIAbility {
       return;
     }
 
-    // Pairing accept from notification
+    // Pairing accept from notification (value is deviceId when present)
     const pairAccept: string | undefined =
       want.parameters !== undefined ? want.parameters['pairAccept'] as string : undefined;
     if (pairAccept) {
       hilog.info(DOMAIN, 'testTag', 'Accept pair from notification: %{public}s', pairAccept);
       AppNotifier.getInstance().cancelPairRequest();
-      AppSession.getInstance().acceptPairing();
+      AppSession.getInstance().acceptPairing(pairAccept);
       return;
     }
 
-    // Pairing reject from notification
+    // Pairing reject from notification (value is deviceId when present)
     const pairReject: string | undefined =
       want.parameters !== undefined ? want.parameters['pairReject'] as string : undefined;
     if (pairReject) {
       hilog.info(DOMAIN, 'testTag', 'Reject pair from notification: %{public}s', pairReject);
       AppNotifier.getInstance().cancelPairRequest();
-      AppSession.getInstance().rejectPairing();
+      AppSession.getInstance().rejectPairing(pairReject);
       return;
     }
 
@@ -176,9 +176,18 @@ export default class EntryAbility extends UIAbility {
     if (FindMyPhoneHelper.getInstance().isActive()) {
       AppSession.getInstance().openFindPhonePage();
     }
+    // Re-assert continuous task after resume (may have been cancelled while backgrounded)
+    KdeBackgroundService.getInstance().ensureRunning().catch((e: Error) => {
+      hilog.warn(DOMAIN, 'testTag', 'BgSvc ensureRunning onForeground: %{public}s', e.message);
+    });
   }
 
   onBackground(): void {
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onBackground');
+    // Keep multi-device TLS/UDP alive under lock screen / home by holding
+    // multiDeviceConnection continuous task (process freeze is the usual cause of drop).
+    KdeBackgroundService.getInstance().ensureRunning().catch((e: Error) => {
+      hilog.error(DOMAIN, 'testTag', 'BgSvc ensureRunning onBackground failed: %{public}s', e.message);
+    });
   }
 }

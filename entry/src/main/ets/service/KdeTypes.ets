@@ -73,6 +73,12 @@ export interface TrustedDevice {
 /** UI list row: merge of discovery + trust + session. */
 export type DeviceRowStatus = 'available' | 'offline' | 'connecting' | 'connected' | 'paired';
 
+/**
+ * Pairing UI state — Android PairingHandler.PairState.
+ * not_paired | requested (we sent) | requested_by_peer | paired
+ */
+export type PairUiState = 'not_paired' | 'requested' | 'requested_by_peer' | 'paired';
+
 export interface DeviceListItem {
   deviceId: string;
   deviceName: string;
@@ -87,6 +93,8 @@ export interface DeviceListItem {
   statusLabel: string;
   /** Remote (desktop) battery when session is active with this device. */
   peerBattery?: PeerBatteryInfo;
+  /** Live pairing state for this peer (Android PairingHandler). */
+  pairState?: PairUiState;
 }
 
 export interface KdeIdentityBody {

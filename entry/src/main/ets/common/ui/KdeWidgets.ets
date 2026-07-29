@@ -146,10 +146,17 @@ export struct KdeSectionHeader {
 export struct KdeDeviceCard {
   @Prop name: string = '';
   @Prop deviceType: string = 'laptop';
-  @Prop summary: string = '';
+  @Prop summary: ResourceStr = '';
   @Prop deviceId: string = '';
   onOpen: () => void = () => {
   };
+
+  private summaryNotEmpty(): boolean {
+    if (typeof this.summary === 'string') {
+      return this.summary.length > 0;
+    }
+    return typeof this.summary === 'object' && this.summary !== null;
+  }
 
   build() {
     Row() {
@@ -168,12 +175,11 @@ export struct KdeDeviceCard {
           .maxLines(2)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
           .width('100%')
-        if (this.summary.length > 0) {
+        // Android: summary is optional warning only (red #CC2222), not connection state
+        if (this.summaryNotEmpty()) {
           Text(this.summary)
             .fontSize(14)
-            .fontColor(this.summary.indexOf('连接') >= 0 || this.summary.indexOf('配对') >= 0
-              ? UiTheme.onSurfaceVariant
-              : UiTheme.danger)
+            .fontColor(UiTheme.danger)
             .maxLines(1)
             .margin({ top: 2 })
             .width('100%')

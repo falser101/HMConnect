@@ -24,6 +24,7 @@
         "exported": true,
         "backgroundModes": [
           "audioPlayback",
+          "dataTransfer",
           "multiDeviceConnection"
         ],
         "skills": [

@@ -132,7 +132,11 @@ export class AppSession {
           console.warn('[AppSession] clipboard has no text');
           return;
         }
-        this.service.sendClipboardText(text.trim());
+        if (deviceId && deviceId.length > 0) {
+          this.service.sendClipboardTextTo(deviceId, text.trim());
+        } else {
+          this.service.sendClipboardText(text.trim());
+        }
         console.info('[AppSession] clipboard sent to', deviceId);
       });
     } catch (e) {
@@ -140,14 +144,22 @@ export class AppSession {
     }
   }
 
-  /** Accept incoming pair request (from notification). */
-  public acceptPairing(): void {
-    this.service.getClient().acceptPairing();
+  /** Accept incoming pair request (from notification). Optional deviceId when known. */
+  public acceptPairing(deviceId?: string): void {
+    if (deviceId && deviceId.length > 0) {
+      this.service.getClient().acceptPairingFor(deviceId);
+    } else {
+      this.service.getClient().acceptPairing();
+    }
   }
 
   /** Reject incoming pair request (from notification). */
-  public rejectPairing(): void {
-    this.service.getClient().rejectPairing();
+  public rejectPairing(deviceId?: string): void {
+    if (deviceId && deviceId.length > 0) {
+      this.service.getClient().rejectPairingFor(deviceId);
+    } else {
+      this.service.getClient().rejectPairing();
+    }
   }
 
   /** Navigate to device detail and trigger file picker. */

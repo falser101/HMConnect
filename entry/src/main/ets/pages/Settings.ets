@@ -1,5 +1,6 @@
 import { AppSession } from '../app/AppSession';
 import { DeviceStore } from '../store/DeviceStore';
+import { PluginSettingsStore } from '../store/PluginSettingsStore';
 import { goBack } from '../common/NavUtil';
 import { UiTheme } from '../common/ui/UiTheme';
 import { KdeTopBar } from '../common/ui/KdeWidgets';
@@ -97,6 +98,8 @@ struct Settings {
 
   private clearPairs(): void {
     DeviceStore.getInstance().clear().then(() => {
+      return PluginSettingsStore.getInstance().clearAll();
+    }).then(() => {
       let svc = AppSession.getInstance().getService();
       svc.disconnect();
       svc.reloadTrustCache();

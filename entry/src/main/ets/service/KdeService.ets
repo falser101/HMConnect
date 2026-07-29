@@ -1,6 +1,7 @@
 import { common } from '@kit.AbilityKit';
 import { KdeDiscover } from './KdeDiscover';
 import { KdeClient } from './KdeClient';
+import { DeviceSession } from './DeviceSession';
 import { FileSendJob } from './FileSendJob';
 import {
   KdeDevice,
@@ -8,14 +9,16 @@ import {
   KdeShareRequestBody,
   DeviceListItem,
   DeviceRowStatus,
+  PairUiState,
   PeerBatteryInfo,
   KDE_PROTOCOL_VERSION,
   MY_DEVICE_ID
 } from './KdeTypes';
 import { DeviceStore } from '../store/DeviceStore';
+import { PluginSettingsStore } from '../store/PluginSettingsStore';
 
 /**
- * Facade that wires discovery + session for the app.
+ * Facade that wires discovery + multi-device sessions for the app.
  */
 export class KdeService {
   private discover: KdeDiscover = new KdeDiscover();
@@ -42,6 +45,7 @@ export class KdeService {
     this.started = true;
 
     await DeviceStore.getInstance().init(context);
+    await PluginSettingsStore.getInstance().init(context);
     this.client.setContext(context);
     this.client.loadTrustedFromStore();
     this.client.setStatusListener((status: KdeStatus) => {
@@ -56,8 +60,11 @@ export class KdeService {
       }
       this.pushDeviceList();
     });
-    this.client.setSessionChangeListener((live: boolean, _paired: boolean) => {
-      this.discover.setAnnouncePaused(live);
+    this.client.setSessionChangeListener((_live: boolean, _paired: boolean) => {
+      // Keep broadcast for new devices, but skip unicast poke to already-live peers
+      // so they don't reverse-connect every 8s and thrash our sessions.
+      this.discover.setAnnouncePaused(false);
+      this.discover.setConnectedPeerIps(this.client.getLivePeerIps());
       this.pushDeviceList();
     });
 
@@ -85,8 +92,6 @@ export class KdeService {
     if (!this.devicesCallback) {
       return;
     }
-    // Defer to next microtask so @State mutations never happen during ArkUI render.
-    // TLS message handlers fire in the same event-loop tick as build().
     const cb: (items: DeviceListItem[]) => void = this.devicesCallback;
     const items: DeviceListItem[] = this.buildDeviceList();
     setTimeout(() => {
@@ -99,13 +104,21 @@ export class KdeService {
   public buildDeviceList(): DeviceListItem[] {
     let items: DeviceListItem[] = [];
     let seen: Set<string> = new Set();
-    // Prefer live peer; fall back to last status peer while connecting
-    let peer = this.client.getPeer();
-    let activeId: string | undefined = peer?.deviceId ?? this.lastStatus.peerDeviceId;
-    let live: boolean = this.client.isSessionLive();
-    let peerPaired: boolean = this.client.isPaired();
-    let connecting: boolean =
-      this.lastStatus.state === 'connecting' || this.lastStatus.state === 'tls_handshake';
+    let sessions = this.client.getSessions();
+    let sessionById: Map<string, DeviceSession> = new Map();
+    for (let i = 0; i < sessions.length; i++) {
+      let s = sessions[i];
+      let id = s.getBoundDeviceId();
+      if (id.length > 0) {
+        sessionById.set(id, s);
+      }
+    }
+
+    // Connecting targets from last status (outbound in progress before TLS live)
+    let connectingId: string | undefined =
+      (this.lastStatus.state === 'connecting' || this.lastStatus.state === 'tls_handshake')
+        ? this.lastStatus.peerDeviceId
+        : undefined;
 
     // Trusted first
     let trusted = DeviceStore.getInstance().getAll();
@@ -114,34 +127,32 @@ export class KdeService {
       seen.add(t.deviceId);
       let online = this.discovered.has(t.deviceId);
       let disc = this.discovered.get(t.deviceId);
-      // Session is "active" only while TLS is live with this exact device
-      let sessionActive = live && activeId !== undefined && activeId === t.deviceId;
-      let isTarget = activeId !== undefined && activeId === t.deviceId;
+      let sess = sessionById.get(t.deviceId);
+      let sessionActive = sess !== undefined && sess.isSessionLive();
+      let peerPaired = sess !== undefined && sess.isPaired();
+      let isConnectingTarget = connectingId !== undefined && connectingId === t.deviceId && !sessionActive;
+      // status is for list bucketing only; home UI shows name only (Android PairingScreen)
       let status: DeviceRowStatus = 'offline';
-      let statusLabel = '已配对 · 离线';
+      let statusLabel = '';
       if (sessionActive && peerPaired) {
         status = 'paired';
-        statusLabel = '已连接 · 已配对';
       } else if (sessionActive) {
         status = 'connected';
-        statusLabel = '已连接';
-      } else if (isTarget && connecting) {
+      } else if (isConnectingTarget) {
         status = 'connecting';
-        statusLabel = '连接中…';
       } else if (online) {
         status = 'available';
-        statusLabel = '在线 · 可连接';
       }
-      // Only the active peer may take name/IP from the live session — never apply
-      // peer fields to other trusted devices (that made every row show peer #2's name).
+
+      let peer = sess?.getPeer();
       let name = t.deviceName;
       if (disc?.deviceName) {
         name = disc.deviceName;
-      } else if (isTarget && peer?.deviceName) {
+      } else if (peer?.deviceName) {
         name = peer.deviceName;
       }
       let ip = '';
-      if (isTarget && peer?.ip) {
+      if (peer?.ip) {
         ip = peer.ip;
       } else if (disc?.ip) {
         ip = disc.ip;
@@ -149,7 +160,7 @@ export class KdeService {
         ip = t.lastIp ?? '';
       }
       let tcpPort = 1716;
-      if (isTarget && peer?.tcpPort) {
+      if (peer?.tcpPort) {
         tcpPort = peer.tcpPort;
       } else if (disc?.tcpPort) {
         tcpPort = disc.tcpPort;
@@ -159,18 +170,22 @@ export class KdeService {
       let proto = KDE_PROTOCOL_VERSION;
       if (disc?.protocolVersion) {
         proto = disc.protocolVersion;
-      } else if (isTarget && peer?.protocolVersion) {
+      } else if (peer?.protocolVersion) {
         proto = peer.protocolVersion;
       }
       let peerBat: PeerBatteryInfo | undefined = undefined;
-      if (sessionActive) {
-        let b = this.client.getPeerBattery();
+      if (sessionActive && sess) {
+        let b = sess.getPeerBattery();
         if (b) {
           peerBat = b;
         }
       }
-      // Reachable for UI: on LAN, active TLS session, or currently connecting to this peer.
-      let reachable = online || sessionActive || (isTarget && connecting);
+      let pairState: PairUiState = sess ? sess.getPairState() : (online || sessionActive ? 'not_paired' : 'paired');
+      if (!sess) {
+        // Trusted offline → paired for UI; trusted online without session → not_paired until TLS
+        pairState = 'paired';
+      }
+      let reachable = online || sessionActive || isConnectingTarget;
       items.push({
         deviceId: t.deviceId,
         deviceName: name,
@@ -183,7 +198,8 @@ export class KdeService {
         sessionActive: sessionActive,
         status: status,
         statusLabel: statusLabel,
-        peerBattery: peerBat
+        peerBattery: peerBat,
+        pairState: pairState
       });
     }
 
@@ -192,27 +208,28 @@ export class KdeService {
       if (seen.has(d.deviceId)) {
         return;
       }
-      let sessionActive = live && activeId !== undefined && activeId === d.deviceId;
-      let isTarget = activeId !== undefined && activeId === d.deviceId;
+      seen.add(d.deviceId);
+      let sess = sessionById.get(d.deviceId);
+      let sessionActive = sess !== undefined && sess.isSessionLive();
+      let peerPaired = sess !== undefined && sess.isPaired();
+      let isConnectingTarget = connectingId !== undefined && connectingId === d.deviceId && !sessionActive;
       let status: DeviceRowStatus = 'available';
-      let statusLabel = '可配对';
+      let statusLabel = '';
       if (sessionActive && peerPaired) {
         status = 'paired';
-        statusLabel = '已连接 · 已配对';
       } else if (sessionActive) {
         status = 'connected';
-        statusLabel = '已连接 · 待配对';
-      } else if (isTarget && connecting) {
+      } else if (isConnectingTarget) {
         status = 'connecting';
-        statusLabel = '连接中…';
       }
       let peerBat2: PeerBatteryInfo | undefined = undefined;
-      if (sessionActive) {
-        let b2 = this.client.getPeerBattery();
+      if (sessionActive && sess) {
+        let b2 = sess.getPeerBattery();
         if (b2) {
           peerBat2 = b2;
         }
       }
+      let pairState2: PairUiState = sess ? sess.getPairState() : 'not_paired';
       items.push({
         deviceId: d.deviceId,
         deviceName: d.deviceName,
@@ -225,23 +242,32 @@ export class KdeService {
         sessionActive: sessionActive,
         status: status,
         statusLabel: statusLabel,
-        peerBattery: peerBat2
+        peerBattery: peerBat2,
+        pairState: pairState2
       });
     });
 
-    // If we have a live/connecting peer that is neither trusted nor currently in
-    // the discovery map (announce paused), still surface it so list/detail agree.
-    if (activeId && !seen.has(activeId) && peer && (live || connecting)) {
-      let sessionActive = live;
+    // Sessions that are live but not in trusted/discovered (announce paused, etc.)
+    sessionById.forEach((sess: DeviceSession, id: string) => {
+      if (seen.has(id)) {
+        return;
+      }
+      if (!sess.isSessionLive() && !(connectingId === id)) {
+        return;
+      }
+      let peer = sess.getPeer();
+      if (!peer) {
+        return;
+      }
+      let sessionActive = sess.isSessionLive();
+      let peerPaired = sess.isPaired();
       let status: DeviceRowStatus = sessionActive
         ? (peerPaired ? 'paired' : 'connected')
         : 'connecting';
-      let statusLabel = sessionActive
-        ? (peerPaired ? '已连接 · 已配对' : '已连接 · 待配对')
-        : '连接中…';
+      let statusLabel = '';
       let peerBat3: PeerBatteryInfo | undefined = undefined;
       if (sessionActive) {
-        let b3 = this.client.getPeerBattery();
+        let b3 = sess.getPeerBattery();
         if (b3) {
           peerBat3 = b3;
         }
@@ -253,19 +279,21 @@ export class KdeService {
         ip: peer.ip,
         tcpPort: peer.tcpPort,
         protocolVersion: peer.protocolVersion,
-        trusted: false,
+        trusted: DeviceStore.getInstance().isTrusted(peer.deviceId),
         online: true,
         sessionActive: sessionActive,
         status: status,
         statusLabel: statusLabel,
-        peerBattery: peerBat3
+        peerBattery: peerBat3,
+        pairState: sess.getPairState()
       });
-    }
+    });
 
     return items;
   }
 
   public connect(device: KdeDevice): void {
+    // Never globally pause discovery permanently for multi-device
     this.discover.setAnnouncePaused(false);
     this.discover.requestReverseConnect(device);
     this.client.connectToDevice(device);
@@ -287,36 +315,64 @@ export class KdeService {
     this.client.sendClipboardFromText(text);
   }
 
-  /** Expose client for pairing acceptance. */
+  public sendClipboardTextTo(deviceId: string, text: string): void {
+    this.client.sendClipboardToDevice(deviceId, text);
+  }
+
+  /** Hub (multi-session manager). */
   public getClient(): KdeClient {
     return this.client;
   }
 
-  public getClientForDevice(_deviceId: string): KdeClient {
-    return this.client;
+  /** Per-device session for plugins / MPRIS / file send. */
+  public getClientForDevice(deviceId: string): DeviceSession | null {
+    return this.client.getClientForDevice(deviceId);
   }
 
-  /** User-initiated pair request. */
   public requestPairing(): void {
     this.client.requestPairing();
   }
 
-  /** Whether peer has requested pairing (for UI). */
+  public requestPairingFor(deviceId: string): void {
+    this.client.requestPairingFor(deviceId);
+  }
+
   public isPairRequestedByPeer(): boolean {
     return this.client.isPairRequestedByPeer();
   }
 
-  /** Create a FileSendJob bound to this device session. */
-  public createFileSendJob(): FileSendJob {
-    return new FileSendJob(this.client);
+  public isPairRequestedByPeerFor(deviceId: string): boolean {
+    return this.client.isPairRequestedByPeerFor(deviceId);
   }
 
-  /**
-   * Send a file using dual-channel (JSON on main TLS, raw bytes on temp TCP).
-   * @param body  Share-request metadata (filename, numberOfFiles, totalPayloadSize)
-   * @param filePath  Absolute device path of the file to send
-   * @param onProgress  Optional progress callback: (percent: 0-100) => void
-   */
+  public cancelPairingFor(deviceId: string): void {
+    this.client.cancelPairingFor(deviceId);
+  }
+
+  public isPairRequestedFor(deviceId: string): boolean {
+    return this.client.isPairRequestedFor(deviceId);
+  }
+
+  public getPairStateFor(deviceId: string): PairUiState {
+    return this.client.getPairStateFor(deviceId);
+  }
+
+  public createFileSendJob(): FileSendJob {
+    let s = this.client.getClient();
+    if (!s) {
+      throw new Error('Not connected');
+    }
+    return new FileSendJob(s);
+  }
+
+  public createFileSendJobFor(deviceId: string): FileSendJob {
+    let s = this.client.getClientForDevice(deviceId);
+    if (!s) {
+      throw new Error('Not connected');
+    }
+    return new FileSendJob(s);
+  }
+
   public sendFileWithPayload(
     body: KdeShareRequestBody,
     filePath: string,
@@ -329,13 +385,20 @@ export class KdeService {
     this.client.sendPing();
   }
 
+  public sendPingTo(deviceId: string): void {
+    this.client.sendPingTo(deviceId);
+  }
+
   public stopFindMyPhone(): void {
     this.client.stopFindMyPhone();
   }
 
-  /** Make the remote device ring. */
   public sendRing(): void {
     this.client.sendFindMyPhone();
+  }
+
+  public sendRingTo(deviceId: string): void {
+    this.client.sendFindMyPhoneTo(deviceId);
   }
 
   public getPeerBattery(): PeerBatteryInfo | null {
@@ -344,17 +407,19 @@ export class KdeService {
 
   public disconnect(): void {
     this.client.disconnect();
-    this.discover.setAnnouncePaused(false);
+    this.pushDeviceList();
+  }
+
+  public disconnectDevice(deviceId: string): void {
+    this.client.disconnectDevice(deviceId);
     this.pushDeviceList();
   }
 
   public async unpair(deviceId: string): Promise<void> {
     await this.client.unpair(deviceId);
-    this.discover.setAnnouncePaused(false);
     this.pushDeviceList();
   }
 
-  /** After clearing DeviceStore, refresh client trust cache. */
   public reloadTrustCache(): void {
     this.client.loadTrustedFromStore();
     this.pushDeviceList();
@@ -370,7 +435,6 @@ export class KdeService {
     return undefined;
   }
 
-  /** Full teardown — only on Ability destroy. */
   public stop(): void {
     this.discover.stopListen();
     this.client.stop();
@@ -393,7 +457,6 @@ export class KdeService {
     return this.started;
   }
 
-  /** Network change → tell discover to re-announce + re-scan. */
   public onNetworkChange(): void {
     if (!this.started) {
       return;
@@ -402,7 +465,6 @@ export class KdeService {
     this.discover.onNetworkChange();
   }
 
-  /** Re-announce on LAN (UI pull-to-refresh / toolbar refresh). */
   public forceRefresh(): void {
     if (!this.started) {
       return;
