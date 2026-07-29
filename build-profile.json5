@@ -5,13 +5,13 @@
         "name": "default",
         "type": "HarmonyOS",
         "material": {
-          "certpath": "/Users/falser/.ohos/config/default_HMConnect_bxq5hH43-hu86BtHQq_2-UEjMe8DBUHc8ivCNBeSnbk=.cer",
-          "keyAlias": "debugKey",
-          "keyPassword": "0000001B56D6D742F7D34421DAFA00EC0658418EC5F37AED06D3D7B0E4717953CA4D9186D36ACBE944CD80",
-          "profile": "/Users/falser/.ohos/config/default_HMConnect_bxq5hH43-hu86BtHQq_2-UEjMe8DBUHc8ivCNBeSnbk=.p7b",
+          "storeFile": "/Users/falser/DevEcoStudioProjects/HMConnect/docs/HMConnect.p12",
+          "storePassword": "00000018CFCF28F11D6519CC11481F76684CFD304FDEA8CFE1A2A7183429F94FCB392E09A7040F8F",
+          "keyAlias": "HMConnect",
+          "keyPassword": "00000018641D958FE02141FFE50E9B975E234D3236C54AD04B8F120A9AA13A6AB2E754ED70BCE61F",
           "signAlg": "SHA256withECDSA",
-          "storeFile": "/Users/falser/.ohos/config/default_HMConnect_bxq5hH43-hu86BtHQq_2-UEjMe8DBUHc8ivCNBeSnbk=.p12",
-          "storePassword": "0000001B7C41C28D35386506784F357D1183BC60EF07F18F9E54263EBE8FD2AF7097FD8690F2735DD0CC51"
+          "profile": "/Users/falser/Downloads/HMConnectDebug.p7b",
+          "certpath": "/Users/falser/DevEcoStudioProjects/HMConnect/docs/HMConnect.cer"
         }
       }
     ],
