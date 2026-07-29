@@ -11,9 +11,11 @@ import {
   PLUGIN_MPRIS,
   PLUGIN_PING,
   PLUGIN_SHARE,
-  PluginMeta
+  PluginMeta,
+  isPluginSupportedByPeer
 } from '../service/PluginRegistry';
 import { PluginSettingsStore } from '../store/PluginSettingsStore';
+import { DeviceListItem } from '../service/KdeTypes';
 
 interface PluginSettingsParams {
   deviceId: string;
@@ -125,9 +127,23 @@ struct PluginSettings {
 
   private reloadRows(): void {
     const store = PluginSettingsStore.getInstance();
+    // Android PluginSettingsListFragment: only supportedPlugins for this device
+    let peerIn: string[] | undefined = undefined;
+    let peerOut: string[] | undefined = undefined;
+    if (this.deviceId.length > 0) {
+      const item: DeviceListItem | undefined =
+        this.session.getService().getDeviceById(this.deviceId);
+      if (item) {
+        peerIn = item.incomingCapabilities;
+        peerOut = item.outgoingCapabilities;
+      }
+    }
     const list: PluginRow[] = [];
     for (let i = 0; i < IMPLEMENTED_PLUGINS.length; i++) {
       const meta: PluginMeta = IMPLEMENTED_PLUGINS[i];
+      if (!isPluginSupportedByPeer(meta.key, peerIn, peerOut)) {
+        continue;
+      }
       list.push({
         key: meta.key,
         title: this.titleForKey(meta.key),

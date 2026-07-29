@@ -193,6 +193,10 @@
       "value": "Accept the request on the other device…"
     },
     {
+      "name": "pairing_verification_label",
+      "value": "Make sure both devices show the same code"
+    },
+    {
       "name": "unreachable_message",
       "value": "This paired device is not reachable. Make sure it is connected to your same network."
     },

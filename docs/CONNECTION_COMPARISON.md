@@ -29,14 +29,15 @@
 | 本机 deviceId | 运行时生成并持久化 | 固定 `MY_DEVICE_ID` | 否 | |
 | 本机证书 | 动态 RSA + 签发，CN=deviceId | rawfile 固定 PEM | 否 | |
 | 对端证书 TOFU 存证 | ✅ 配对后校验 | ❌ 不存证 | 否 | |
-| 校验码 verification key | ✅ v7/v8 | ❌ 无对端证书，未展示 | 否 | TOFU 后补 |
-| 协议版本 | **v8** | **v7** | 否 | |
+| 校验码 verification key | ✅ v7/v8 | ✅ v8（双方≥8）/ v7 回退 | 基本 | TLS 取对端证书公钥 |
+| 协议版本 | **v8** | **v8** | 是 | 2026-07-29 升级；含 TLS 后 identity 交换 |
 | 配对 4 态状态机 | ✅ `PairingHandler` | ✅ `not_paired/requested/requested_by_peer/paired` + UI | 基本 | 2026-07-29 对齐 |
 | 配对超时 25s/30s | ✅ | ✅ 30s 主动 / 25s 被请求 | 是 | |
 | 取消进行中的配对 | ✅ Cancel pairing | ✅ 菜单+等待页按钮 | 是 | |
 | 进详情自动 TLS | 发现即 link | ✅ 进详情 auto-connect | 基本 | |
 | 接受/拒绝仅 RequestedByPeer | ✅ | ✅ | 是 | |
-| pair timestamp 时钟差（v8） | ✅ ±30min | 有发 timestamp，无校验 | 部分 | |
+| pair timestamp 时钟差（v8） | ✅ ±30min | ✅ 发送 + 校验 ±30min | 是 | |
+| TLS 后加密 identity（v8） | ✅ 双方互发 | ✅ exchangeSecureIdentity | 是 | |
 | 接受 / 拒绝配对（UI+通知） | ✅ | ✅ | 是 | |
 | 断开（保信任） | ✅ | ✅ `disconnect` | 是 | 需带 deviceId（多设备后） |
 | 取消配对（双向） | ✅ | ✅ `unpair` | 基本 | |

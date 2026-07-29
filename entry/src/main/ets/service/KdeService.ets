@@ -186,6 +186,10 @@ export class KdeService {
         pairState = 'paired';
       }
       let reachable = online || sessionActive || isConnectingTarget;
+      const peerFromSess = sess?.getPeer();
+      const incCaps = peerFromSess?.incomingCapabilities ?? disc?.incomingCapabilities;
+      const outCaps = peerFromSess?.outgoingCapabilities ?? disc?.outgoingCapabilities;
+      const vKey = sess ? sess.getVerificationKey() : '';
       items.push({
         deviceId: t.deviceId,
         deviceName: name,
@@ -199,7 +203,10 @@ export class KdeService {
         status: status,
         statusLabel: statusLabel,
         peerBattery: peerBat,
-        pairState: pairState
+        pairState: pairState,
+        incomingCapabilities: incCaps,
+        outgoingCapabilities: outCaps,
+        verificationKey: vKey.length > 0 ? vKey : undefined
       });
     }
 
@@ -230,6 +237,10 @@ export class KdeService {
         }
       }
       let pairState2: PairUiState = sess ? sess.getPairState() : 'not_paired';
+      const peerFromSess2 = sess?.getPeer();
+      const incCaps2 = peerFromSess2?.incomingCapabilities ?? d.incomingCapabilities;
+      const outCaps2 = peerFromSess2?.outgoingCapabilities ?? d.outgoingCapabilities;
+      const vKey2 = sess ? sess.getVerificationKey() : '';
       items.push({
         deviceId: d.deviceId,
         deviceName: d.deviceName,
@@ -243,7 +254,10 @@ export class KdeService {
         status: status,
         statusLabel: statusLabel,
         peerBattery: peerBat2,
-        pairState: pairState2
+        pairState: pairState2,
+        incomingCapabilities: incCaps2,
+        outgoingCapabilities: outCaps2,
+        verificationKey: vKey2.length > 0 ? vKey2 : undefined
       });
     });
 
@@ -272,6 +286,7 @@ export class KdeService {
           peerBat3 = b3;
         }
       }
+      const vKey3 = sess.getVerificationKey();
       items.push({
         deviceId: peer.deviceId,
         deviceName: peer.deviceName,
@@ -285,7 +300,10 @@ export class KdeService {
         status: status,
         statusLabel: statusLabel,
         peerBattery: peerBat3,
-        pairState: sess.getPairState()
+        pairState: sess.getPairState(),
+        incomingCapabilities: peer.incomingCapabilities,
+        outgoingCapabilities: peer.outgoingCapabilities,
+        verificationKey: vKey3.length > 0 ? vKey3 : undefined
       });
     });
 
@@ -306,7 +324,9 @@ export class KdeService {
       ip: item.ip,
       tcpPort: item.tcpPort,
       protocolVersion: item.protocolVersion,
-      deviceType: item.deviceType
+      deviceType: item.deviceType,
+      incomingCapabilities: item.incomingCapabilities,
+      outgoingCapabilities: item.outgoingCapabilities
     };
     this.connect(d);
   }

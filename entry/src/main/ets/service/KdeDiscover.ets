@@ -140,7 +140,13 @@ export class KdeDiscover {
             ip: value.remoteInfo.address,
             tcpPort: body.tcpPort ?? KDE_UDP_PORT,
             protocolVersion: body.protocolVersion ?? KDE_PROTOCOL_VERSION,
-            deviceType: body.deviceType ?? 'desktop'
+            deviceType: body.deviceType ?? 'desktop',
+            incomingCapabilities: body.incomingCapabilities
+              ? body.incomingCapabilities.slice()
+              : undefined,
+            outgoingCapabilities: body.outgoingCapabilities
+              ? body.outgoingCapabilities.slice()
+              : undefined
           };
 
           let existed = this.discoveredDevices.has(device.deviceId);

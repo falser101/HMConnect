@@ -1,12 +1,15 @@
 /**
- * KDE Connect protocol shared types (MVP, protocol v7-compatible wire format).
- * Packets are newline-delimited JSON.
+ * KDE Connect protocol shared types.
+ * Wire format: newline-delimited JSON (protocol v8).
  */
 
 export const KDE_UDP_PORT: number = 1716;
 export const KDE_MIN_TCP_PORT: number = 1716;
 export const KDE_MAX_TCP_PORT: number = 1764;
-export const KDE_PROTOCOL_VERSION: number = 7;
+/** Align with Android DeviceHelper.PROTOCOL_VERSION. */
+export const KDE_PROTOCOL_VERSION: number = 8;
+/** Android PairingHandler.allowedTimestampDifferenceSeconds (±30 min). */
+export const PAIR_TIMESTAMP_MAX_DIFF_SEC: number = 1800;
 
 /** Port range for temporary payload transfer sockets (Android: PAYLOAD_TRANSFER_MIN_PORT). */
 export const PAYLOAD_TRANSFER_MIN_PORT: number = 1739;
@@ -57,6 +60,10 @@ export interface KdeDevice {
   tcpPort: number;
   protocolVersion: number;
   deviceType: string;
+  /** Peer packets it can receive (from identity). Empty/undefined = unknown. */
+  incomingCapabilities?: string[];
+  /** Peer packets it can send (from identity). Empty/undefined = unknown. */
+  outgoingCapabilities?: string[];
 }
 
 /** Persisted paired device (trust). */
@@ -95,6 +102,14 @@ export interface DeviceListItem {
   peerBattery?: PeerBatteryInfo;
   /** Live pairing state for this peer (Android PairingHandler). */
   pairState?: PairUiState;
+  /** Peer identity capabilities (for plugin UI filter). */
+  incomingCapabilities?: string[];
+  outgoingCapabilities?: string[];
+  /**
+   * Pairing verification code (Android pairVerification).
+   * Non-empty only while pairState is requested / requested_by_peer.
+   */
+  verificationKey?: string;
 }
 
 export interface KdeIdentityBody {

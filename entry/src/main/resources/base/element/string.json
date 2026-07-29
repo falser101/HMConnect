@@ -233,6 +233,10 @@
       "value": "请在对方设备上接受配对…"
     },
     {
+      "name": "pairing_verification_label",
+      "value": "请确认双方校验码一致"
+    },
+    {
       "name": "unreachable_message",
       "value": "该已配对设备无法访问。请确保它连接到同一网络。"
     },

@@ -16,6 +16,8 @@ import {
   PLUGIN_MPRIS,
   PLUGIN_PING,
   PLUGIN_SHARE,
+  isUiButtonForPeer,
+  peerSupportsRingMenu,
   pluginKeyForUiButton
 } from '../service/PluginRegistry';
 import { PluginSettingsStore } from '../store/PluginSettingsStore';
@@ -75,8 +77,11 @@ struct DeviceDetail {
   private pluginSubId: number = -1;
   private session: AppSession = AppSession.getInstance();
 
-  // ── Plugin button definitions (matches Android getUiButtons) ──
-  // disabled=true → not implemented (coming soon); user-disabled plugins are hidden
+  // ── Plugin button catalog (Android getUiButtons per loaded plugin) ──
+  // Common (phone + desktop): send files / multimedia / clipboard
+  // Desktop-oriented (hidden for phone peers): remote input / run command /
+  // presentation / drawing — Android Presenter isCompatible + capability load
+  // disabled=true → not implemented (coming soon); user-disabled plugins hidden
   private allPluginBtns: PluginButton[] = [
     { label: $r('app.string.plugin_send_files'), symbol: KdeIconRes.fileUpload(), disabled: false, onTap: () => { this.onSendFiles(); }, pluginKey: 'send_files' },
     { label: $r('app.string.plugin_multimedia_control'), symbol: KdeIconRes.music(), disabled: false, onTap: () => { this.openMpris(); }, pluginKey: 'multimedia' },
@@ -175,13 +180,24 @@ struct DeviceDetail {
     }
   }
 
-  /** Hide user-disabled plugins (Android: only loadedPlugins show UI buttons). */
+  /**
+   * Android: only loadedPlugins contribute getUiButtons().
+   * Filter by (1) peer capabilities + deviceType (pluginsForCapabilities / isCompatible)
+   * (2) user-disabled plugin prefs.
+   */
   private refreshPluginButtons(): void {
     const store = PluginSettingsStore.getInstance();
+    const peerType: string = this.item !== null ? this.item.deviceType : 'desktop';
+    const peerIn: string[] | undefined = this.item?.incomingCapabilities;
+    const peerOut: string[] | undefined = this.item?.outgoingCapabilities;
     const out: PluginButton[] = [];
     for (let i = 0; i < this.allPluginBtns.length; i++) {
       const btn = this.allPluginBtns[i];
       const uiKey = btn.pluginKey ?? '';
+      // Capability + deviceType gate (Android loadedPlugins)
+      if (!isUiButtonForPeer(uiKey, peerType, peerIn, peerOut)) {
+        continue;
+      }
       const pluginKey = pluginKeyForUiButton(uiKey);
       if (pluginKey !== null && !store.isEnabled(this.deviceId, pluginKey)) {
         continue;
@@ -190,6 +206,17 @@ struct DeviceDetail {
     }
     this.visiblePluginBtns = out;
     this.pluginRev = this.pluginRev + 1;
+  }
+
+  /** Android pairVerification — 8-char code during pairing. */
+  private verificationKeyText(): string {
+    if (!this.item || !this.item.verificationKey) {
+      return '';
+    }
+    if (this.pairState !== 'requested' && this.pairState !== 'requested_by_peer') {
+      return '';
+    }
+    return this.item.verificationKey;
   }
 
   private isPluginOn(pluginKey: string): boolean {
@@ -212,6 +239,8 @@ struct DeviceDetail {
     let found = this.session.getService().getDeviceById(this.deviceId);
     this.item = found ?? null;
     this.refreshPairState();
+    // deviceType / trust may arrive after first paint — re-filter plugin grid
+    this.refreshPluginButtons();
   }
 
   private refreshPairState(): void {
@@ -473,20 +502,19 @@ struct DeviceDetail {
 
   // ── UI helpers ───────────────────────────────────────────
 
+  /**
+   * Android DeviceFragment.displayBatteryInfoIfPossible:
+   * subtitle only when peer actually sent kdeconnect.battery (remoteBatteryInfo != null).
+   * PC rarely reports battery → no subtitle (not "电量：-").
+   */
   private toolbarSubtitle(): ResourceStr {
-    if (!this.item) {
+    if (!this.item || !this.item.peerBattery) {
       return '';
     }
-    if (this.item.peerBattery) {
-      return BatteryHelper.formatLabel(
-        this.item.peerBattery.currentCharge,
-        this.item.peerBattery.isCharging
-      );
-    }
-    if (this.item.sessionActive) {
-      return $r('app.string.battery_unknown');
-    }
-    return '';
+    return BatteryHelper.formatLabel(
+      this.item.peerBattery.currentCharge,
+      this.item.peerBattery.isCharging
+    );
   }
 
   private isPairingUi(): boolean {
@@ -579,7 +607,9 @@ struct DeviceDetail {
               this.onPing();
             }, false, false)
           }
-          if (this.isPluginOn(PLUGIN_FIND_MY_PHONE)) {
+          // Ring = FindRemoteDevice (capability or phone/tablet/TV fallback)
+          if (this.isPluginOn(PLUGIN_FIND_MY_PHONE) &&
+            peerSupportsRingMenu(this.item.deviceType, this.item.incomingCapabilities)) {
             this.MenuItem($r('app.string.menu_ring'), () => {
               this.onRing();
             }, false, false)
@@ -653,6 +683,23 @@ struct DeviceDetail {
         .fontColor(UiTheme.onSurfaceVariant)
         .width('100%')
         .margin({ bottom: 16 })
+
+      // ── Pairing verification key (Android pairVerification) ──
+      if (this.verificationKeyText().length > 0) {
+        Text($r('app.string.pairing_verification_label'))
+          .fontSize(13)
+          .fontColor(UiTheme.onSurfaceVariant)
+          .width('100%')
+          .margin({ bottom: 6 })
+        Text(this.verificationKeyText())
+          .fontSize(28)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(UiTheme.primary)
+          .letterSpacing(4)
+          .width('100%')
+          .textAlign(TextAlign.Center)
+          .margin({ bottom: 16 })
+      }
 
       // ── TLS connecting (before link is up) ──
       if (this.isConnecting() && this.pairState === 'not_paired') {

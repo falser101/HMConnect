@@ -20,6 +20,7 @@ import {
   ConnectionState,
   TrustedDevice,
   KDE_PROTOCOL_VERSION,
+  PAIR_TIMESTAMP_MAX_DIFF_SEC,
   MY_DEVICE_ID,
   INCOMING_CAPABILITIES,
   OUTGOING_CAPABILITIES,
@@ -48,6 +49,7 @@ import {
 import { utf8Decode } from '../common/Utf8';
 import { BatteryHelper } from '../common/BatteryHelper';
 import { FindMyPhoneHelper } from '../common/FindMyPhoneHelper';
+import { VerificationKeyHelper } from '../common/VerificationKeyHelper';
 
 /**
  * Per-device connection session (one peer).
@@ -126,6 +128,24 @@ export class DeviceSession {
   private batteryTimer: number = -1;
   private lastSentCharge: number = -1;
   private lastSentCharging: boolean = false;
+
+  /** SPKI public keys for pairing verification (Android PairingHandler). */
+  private localPubKey: Uint8Array | null = null;
+  private remotePubKey: Uint8Array | null = null;
+  /** Pair packet timestamp (seconds) for protocol ≥8 verification. */
+  private pairingTimestamp: number = 0;
+  /** Cached 8-char verification code; recomputed when certs/timestamp change. */
+  private cachedVerificationKey: string = '';
+  /**
+   * Protocol v8: post-TLS identity exchange completed (Android LanLinkProvider
+   * secureIdentityPacket). When peer is <8, treated as done immediately.
+   */
+  private secureIdentityDone: boolean = false;
+  /** Resolver waiting for peer's encrypted identity line. */
+  private secureIdentityWaiter: ((ok: boolean) => void) | null = null;
+  /** Peer identity arrived before waiter was armed. */
+  private pendingSecureIdentity: KdeIdentityBody | null = null;
+  private static readonly SECURE_IDENTITY_TIMEOUT_MS: number = 10000;
 
   /**
    * Inject shared hub resources (context, certs, identity, unique bridge port).
@@ -242,6 +262,355 @@ export class DeviceSession {
 
   public getPeerBattery(): PeerBatteryInfo | null {
     return this.peerBattery;
+  }
+
+  /**
+   * Android pairVerification text — only meaningful during pairing states.
+   * Empty when not pairing or certs not yet available.
+   */
+  public getVerificationKey(): string {
+    const state = this.getPairState();
+    if (state !== 'requested' && state !== 'requested_by_peer') {
+      return '';
+    }
+    return this.cachedVerificationKey;
+  }
+
+  public getPeerIncomingCapabilities(): string[] {
+    return this.peerDevice?.incomingCapabilities ?? [];
+  }
+
+  public getPeerOutgoingCapabilities(): string[] {
+    return this.peerDevice?.outgoingCapabilities ?? [];
+  }
+
+  private applyPeerCapabilities(body: KdeIdentityBody): void {
+    if (!this.peerDevice) {
+      return;
+    }
+    if (body.incomingCapabilities && body.incomingCapabilities.length > 0) {
+      this.peerDevice.incomingCapabilities = body.incomingCapabilities.slice();
+    }
+    if (body.outgoingCapabilities && body.outgoingCapabilities.length > 0) {
+      this.peerDevice.outgoingCapabilities = body.outgoingCapabilities.slice();
+    }
+  }
+
+  private async ensureLocalPubKey(): Promise<void> {
+    if (this.localPubKey !== null) {
+      return;
+    }
+    if (this.certPem.length === 0) {
+      return;
+    }
+    const pk = await VerificationKeyHelper.pubKeyFromPem(this.certPem);
+    if (pk) {
+      this.localPubKey = pk;
+    }
+  }
+
+  private async recomputeVerificationKey(): Promise<void> {
+    await this.ensureLocalPubKey();
+    if (!this.localPubKey || !this.remotePubKey) {
+      this.cachedVerificationKey = '';
+      return;
+    }
+    try {
+      // Android PairingHandler.verificationKey: use *remote* protocolVersion.
+      // With both sides on v8 → V8(timestamp). Mixed remote <8 → V7.
+      const peerProto = this.peerDevice?.protocolVersion ?? KDE_PROTOCOL_VERSION;
+      const useV8 = peerProto >= 8 && this.pairingTimestamp > 0;
+      let key: string;
+      if (useV8) {
+        key = await VerificationKeyHelper.getVerificationKeyV8(
+          this.localPubKey,
+          this.remotePubKey,
+          this.pairingTimestamp
+        );
+      } else {
+        key = await VerificationKeyHelper.getVerificationKeyV7(
+          this.localPubKey,
+          this.remotePubKey
+        );
+      }
+      this.cachedVerificationKey = key;
+      console.info(
+        `[KDE-MVP] Verification key: ${key} (localProto=${KDE_PROTOCOL_VERSION} peerProto=${peerProto} ` +
+          `useV8=${useV8} ts=${this.pairingTimestamp} ` +
+          `localPk=${this.localPubKey.byteLength}b remotePk=${this.remotePubKey.byteLength}b)`
+      );
+      this.notifySessionChange();
+    } catch (e) {
+      console.warn('[KDE-MVP] recomputeVerificationKey failed:', JSON.stringify(e));
+      this.cachedVerificationKey = '';
+    }
+  }
+
+  /** Android: post-TLS identity only when remote protocolVersion >= 8. */
+  private needsSecureIdentityExchange(): boolean {
+    // Default to our version when unknown so we don't skip against a real v8 peer
+    const peerProto = this.peerDevice?.protocolVersion ?? KDE_PROTOCOL_VERSION;
+    return peerProto >= 8;
+  }
+
+  /**
+   * After TLS is up: optional v8 secure identity exchange, then session services.
+   * Android LanLinkProvider handshakeCompletedListener.
+   */
+  private async afterTlsReady(gen: number, fromOutbound: boolean): Promise<void> {
+    if (gen !== this.sessionGen) {
+      return;
+    }
+    if (this.needsSecureIdentityExchange()) {
+      const ok = await this.exchangeSecureIdentity(gen);
+      if (!ok || gen !== this.sessionGen) {
+        console.error('[KDE-MVP] Secure identity exchange failed');
+        if (gen === this.sessionGen && !this.paired) {
+          this.emit('error', '协议握手失败（identity），请重试');
+          this.disconnect();
+        }
+        return;
+      }
+      console.info('[KDE-MVP] Protocol v8 secure identity OK');
+    } else {
+      this.secureIdentityDone = true;
+    }
+
+    if (gen !== this.sessionGen) {
+      return;
+    }
+
+    // Flush pair-accept that arrived before channel was fully ready
+    if (this.pendingPairAccept) {
+      this.pendingPairAccept = false;
+      const accept: string = serializePacket('kdeconnect.pair', { pair: true } as KdePairBody);
+      this.sendTls(accept, () => {
+      });
+      console.info('[KDE-MVP] flushed pending pair-accept');
+    }
+
+    this.startBatteryReporting();
+    this.captureTlsCertificates(fromOutbound);
+    if (this.context) {
+      this.setupMprisReceiver(this.context);
+    }
+
+    const peer = this.peerDevice;
+    if (!peer) {
+      return;
+    }
+    const deviceId = peer.deviceId;
+    if (this.isTrusted(deviceId) || this.paired) {
+      this.paired = true;
+      this.trustedDeviceIds.add(deviceId);
+      this.persistTrust(peer).catch(() => {
+      });
+      this.emit('paired', `已与 ${peer.deviceName} 恢复加密连接`, {
+        peerName: peer.deviceName,
+        peerDeviceId: peer.deviceId
+      });
+      console.info('[KDE-MVP] Trusted device, skip pair request');
+      return;
+    }
+    this.emit('connected', '已加密连接', {
+      peerName: peer.deviceName,
+      peerDeviceId: peer.deviceId
+    });
+  }
+
+  /**
+   * Protocol v8: write our identity on TLS, read peer's encrypted identity.
+   * Android writes first then reads (avoid deadlock).
+   */
+  private exchangeSecureIdentity(gen: number): Promise<boolean> {
+    return new Promise<boolean>((resolve: (v: boolean) => void) => {
+      if (gen !== this.sessionGen) {
+        resolve(false);
+        return;
+      }
+
+      const finish = (ok: boolean): void => {
+        if (this.secureIdentityWaiter !== null) {
+          this.secureIdentityWaiter = null;
+        }
+        if (timer >= 0) {
+          clearTimeout(timer);
+          timer = -1;
+        }
+        resolve(ok);
+      };
+
+      // Peer identity may already be in flight
+      if (this.pendingSecureIdentity !== null) {
+        const body = this.pendingSecureIdentity;
+        this.pendingSecureIdentity = null;
+        if (this.applySecureIdentity(body)) {
+          this.secureIdentityDone = true;
+          // Still send ours (peer is waiting)
+          const idPacket = this.buildIdentityPacket();
+          this.sendTls(idPacket, () => {
+          });
+          finish(true);
+          return;
+        }
+        finish(false);
+        return;
+      }
+
+      let timer: number = setTimeout(() => {
+        timer = -1;
+        console.error('[KDE-MVP] Secure identity timeout');
+        this.secureIdentityWaiter = null;
+        resolve(false);
+      }, DeviceSession.SECURE_IDENTITY_TIMEOUT_MS) as number;
+
+      this.secureIdentityWaiter = (ok: boolean): void => {
+        finish(ok);
+      };
+
+      const idPacket = this.buildIdentityPacket();
+      this.sendTls(idPacket, (err) => {
+        if (gen !== this.sessionGen) {
+          finish(false);
+          return;
+        }
+        if (err) {
+          console.error('[KDE-MVP] Send secure identity failed:', JSON.stringify(err));
+          finish(false);
+          return;
+        }
+        console.info('[KDE-MVP] Sent protocol v8 secure identity');
+        // If peer packet arrived between arming waiter and send
+        if (this.pendingSecureIdentity !== null && this.secureIdentityWaiter !== null) {
+          const body = this.pendingSecureIdentity;
+          this.pendingSecureIdentity = null;
+          if (this.applySecureIdentity(body)) {
+            this.secureIdentityDone = true;
+            this.secureIdentityWaiter(true);
+          } else {
+            this.secureIdentityWaiter(false);
+          }
+        }
+      });
+    });
+  }
+
+  /** Validate encrypted identity vs pre-TLS peer; update caps/name. */
+  private applySecureIdentity(body: KdeIdentityBody): boolean {
+    if (!body || !body.deviceId) {
+      console.error('[KDE-MVP] Secure identity missing deviceId');
+      return false;
+    }
+    const expectedId = this.peerDevice?.deviceId ?? this.boundDeviceId;
+    if (expectedId.length > 0 && body.deviceId !== expectedId) {
+      console.error(
+        `[KDE-MVP] Secure identity deviceId mismatch: ${body.deviceId} vs ${expectedId}`
+      );
+      return false;
+    }
+    const preProto = this.peerDevice?.protocolVersion ?? KDE_PROTOCOL_VERSION;
+    const newProto = body.protocolVersion ?? preProto;
+    if (body.protocolVersion !== undefined && body.protocolVersion !== preProto) {
+      console.error(
+        `[KDE-MVP] Protocol version changed mid-handshake: ${preProto} -> ${body.protocolVersion}`
+      );
+      return false;
+    }
+    if (!this.peerDevice) {
+      this.peerDevice = {
+        deviceId: body.deviceId,
+        deviceName: sanitizeDeviceName(body.deviceName ?? 'PC'),
+        ip: '',
+        tcpPort: body.tcpPort ?? 1716,
+        protocolVersion: newProto,
+        deviceType: body.deviceType ?? 'desktop',
+        incomingCapabilities: body.incomingCapabilities
+          ? body.incomingCapabilities.slice()
+          : undefined,
+        outgoingCapabilities: body.outgoingCapabilities
+          ? body.outgoingCapabilities.slice()
+          : undefined
+      };
+    } else {
+      if (body.deviceName) {
+        this.peerDevice.deviceName = sanitizeDeviceName(body.deviceName);
+      }
+      if (body.deviceType) {
+        this.peerDevice.deviceType = body.deviceType;
+      }
+      this.peerDevice.protocolVersion = newProto;
+      this.applyPeerCapabilities(body);
+    }
+    this.boundDeviceId = body.deviceId;
+    this.notifySessionChange();
+    return true;
+  }
+
+  private handleSecureIdentityPacket(body: KdeIdentityBody): void {
+    if (this.secureIdentityDone) {
+      // Late identity — refresh caps only
+      if (body.deviceId === (this.peerDevice?.deviceId ?? '')) {
+        this.applyPeerCapabilities(body);
+      }
+      return;
+    }
+    if (this.secureIdentityWaiter !== null) {
+      if (this.applySecureIdentity(body)) {
+        this.secureIdentityDone = true;
+        this.secureIdentityWaiter(true);
+      } else {
+        this.secureIdentityWaiter(false);
+      }
+      return;
+    }
+    // Arrived before exchangeSecureIdentity armed the waiter
+    this.pendingSecureIdentity = body;
+  }
+
+  /**
+   * Capture peer (and local) certs after TLS is up — for pairing verification UI.
+   * Safe to call multiple times; no-ops if remote already known.
+   */
+  private captureTlsCertificates(fromOutbound: boolean): void {
+    this.ensureLocalPubKey().then(() => {
+      // Prefer live TLS remote cert; fall back already handled by local PEM
+      const tryRemote = async (): Promise<void> => {
+        try {
+          if (fromOutbound && this.outTlsConn) {
+            const raw = await this.outTlsConn.getRemoteCertificate();
+            const pk = await VerificationKeyHelper.pubKeyFromCertBlob(raw);
+            if (pk) {
+              this.remotePubKey = pk;
+            }
+          } else if (this.tlsSocket) {
+            const raw = await this.tlsSocket.getRemoteCertificate();
+            const pk = await VerificationKeyHelper.pubKeyFromCertBlob(raw);
+            if (pk) {
+              this.remotePubKey = pk;
+            }
+          }
+        } catch (e) {
+          console.warn('[KDE-MVP] getRemoteCertificate failed:', JSON.stringify(e));
+        }
+        await this.recomputeVerificationKey();
+      };
+      tryRemote().catch(() => {
+      });
+    }).catch(() => {
+    });
+  }
+
+  private clearVerificationState(): void {
+    this.remotePubKey = null;
+    this.pairingTimestamp = 0;
+    this.cachedVerificationKey = '';
+    this.secureIdentityDone = false;
+    this.pendingSecureIdentity = null;
+    if (this.secureIdentityWaiter !== null) {
+      const w = this.secureIdentityWaiter;
+      this.secureIdentityWaiter = null;
+      w(false);
+    }
   }
 
   /** Stop ringing when user opens the app after a Find My Phone alert. */
@@ -924,13 +1293,7 @@ export class DeviceSession {
       this.outTlsConn = tlsConn;
       console.info('[KDE-MVP] Outbound TLS handshake complete');
 
-      // ── 8. Session is now live ──
-      this.sessionLive = true;
-      this.handlingIncoming = false;
-      this.notifySessionChange();
-      this.startBatteryReporting();
-
-      // Wire up message handler
+      // Wire message handler before v8 secure identity exchange
       tlsConn.on('message', (v: socket.SocketMessageInfo) => {
         if (gen !== this.sessionGen) {
           return;
@@ -964,24 +1327,11 @@ export class DeviceSession {
         }
       });
 
-      // ── 9. Handle pairing (same logic as upgradeClientTls callback) ──
-      const deviceId: string = device.deviceId;
-      if (this.isTrusted(deviceId) || this.paired) {
-        this.paired = true;
-        this.trustedDeviceIds.add(deviceId);
-        this.persistTrust(device).catch(() => {});
-        this.emit('paired', `已与 ${device.deviceName} 恢复加密连接`, {
-          peerName: device.deviceName,
-          peerDeviceId: device.deviceId
-        });
-        console.info('[KDE-MVP] Trusted device, skip pair request (outbound)');
-        return;
-      }
-
-      this.emit('connected', '已加密连接', {
-        peerName: device.deviceName,
-        peerDeviceId: device.deviceId
-      });
+      // ── Session live + protocol v8 secure identity + services ──
+      this.sessionLive = true;
+      this.handlingIncoming = false;
+      this.notifySessionChange();
+      await this.afterTlsReady(gen, true);
 
     } catch (e) {
       console.error('[KDE-MVP] Outbound connection failed:', JSON.stringify(e));
@@ -1126,8 +1476,15 @@ export class DeviceSession {
           ip: value.remoteInfo.address,
           tcpPort: body.tcpPort ?? this.peerDevice?.tcpPort ?? 1716,
           protocolVersion: body.protocolVersion ?? this.peerDevice?.protocolVersion ?? KDE_PROTOCOL_VERSION,
-          deviceType: body.deviceType ?? this.peerDevice?.deviceType ?? 'desktop'
+          deviceType: body.deviceType ?? this.peerDevice?.deviceType ?? 'desktop',
+          incomingCapabilities: body.incomingCapabilities
+            ? body.incomingCapabilities.slice()
+            : this.peerDevice?.incomingCapabilities,
+          outgoingCapabilities: body.outgoingCapabilities
+            ? body.outgoingCapabilities.slice()
+            : this.peerDevice?.outgoingCapabilities
         };
+        this.applyPeerCapabilities(body);
         this.boundDeviceId = body.deviceId;
         PluginSettingsStore.getInstance().ensureDeviceLoaded(body.deviceId).catch(() => {
         });
@@ -1364,39 +1721,10 @@ export class DeviceSession {
         console.info('[KDE-MVP] TLS handshake OK');
         this.sessionLive = true;
         this.handlingIncoming = false;
-        // Flush any pending pair-accept that arrived before TLS was fully live
-        if (this.pendingPairAccept) {
-          this.pendingPairAccept = false;
-          const accept: string = serializePacket('kdeconnect.pair', { pair: true } as KdePairBody);
-          this.sendTls(accept, () => {});
-          console.info('[KDE-MVP] flushed pending pair-accept');
-        }
         this.notifySessionChange();
-        // Report phone battery as soon as the channel is up (desktop shows it even pre-pair on some builds)
-        this.startBatteryReporting();
-        // Register as media controller for remote control
-        if (this.context) {
-          this.setupMprisReceiver(this.context);
-        }
-
-        let deviceId: string = peer.deviceId;
-        if (this.isTrusted(deviceId) || this.paired) {
-          this.paired = true;
-          this.trustedDeviceIds.add(deviceId);
-          this.persistTrust(peer).catch(() => {
-          });
-          this.emit('paired', `已与 ${peer.deviceName} 恢复加密连接`, {
-            peerName: peer.deviceName,
-            peerDeviceId: peer.deviceId
-          });
-          // Already trusted — do NOT send pair:true again (causes PC re-prompt / unpair loops)
-          console.info('[KDE-MVP] Trusted device, skip pair request');
-          return;
-        }
-
-        this.emit('connected', '已加密连接', {
-          peerName: peer.deviceName,
-          peerDeviceId: peer.deviceId
+        // Protocol v8 secure identity + battery / certs / pairing UI
+        this.afterTlsReady(gen, false).catch((e: Error) => {
+          console.error('[KDE-MVP] afterTlsReady failed:', e.message);
         });
       });
     } catch (e) {
@@ -1471,6 +1799,35 @@ export class DeviceSession {
           console.warn('[KDE-MVP] Ignoring second pairing request before timeout');
         } else {
           // Peer requested pairing → RequestedByPeer (Android: 25s timeout)
+          // Protocol v8: require timestamp and clock skew ≤ 30 min
+          const peerProto = this.peerDevice?.protocolVersion ?? KDE_PROTOCOL_VERSION;
+          if (peerProto >= 8) {
+            if (typeof pairBody.timestamp !== 'number' || pairBody.timestamp <= 0) {
+              console.error('[KDE-MVP] v8 pair request missing timestamp — reject');
+              this.emit('error', '配对失败：缺少时间戳', {
+                peerName: this.peerDevice?.deviceName,
+                peerDeviceId: this.peerDevice?.deviceId
+              });
+              return;
+            }
+            const nowSec = Math.floor(Date.now() / 1000);
+            const skew = Math.abs(pairBody.timestamp - nowSec);
+            if (skew > PAIR_TIMESTAMP_MAX_DIFF_SEC) {
+              console.error(`[KDE-MVP] v8 pair clock skew ${skew}s > ${PAIR_TIMESTAMP_MAX_DIFF_SEC}s`);
+              this.emit('error', '配对失败：双方设备时间相差过大', {
+                peerName: this.peerDevice?.deviceName,
+                peerDeviceId: this.peerDevice?.deviceId
+              });
+              return;
+            }
+            this.pairingTimestamp = pairBody.timestamp;
+            this.recomputeVerificationKey().catch(() => {
+            });
+          } else if (typeof pairBody.timestamp === 'number' && pairBody.timestamp > 0) {
+            this.pairingTimestamp = pairBody.timestamp;
+            this.recomputeVerificationKey().catch(() => {
+            });
+          }
           this.pairRequestedByPeer = true;
           this.pairRequestSentForGen = -1;
           this.startPairTimer(
@@ -1514,7 +1871,8 @@ export class DeviceSession {
     }
 
     if (type === 'kdeconnect.identity') {
-      // post-TLS identity (protocol 8); accept quietly
+      // Protocol v8 encrypted identity (Android secureIdentityPacket)
+      this.handleSecureIdentityPacket(body as KdeIdentityBody);
       return;
     }
 
@@ -1860,12 +2218,16 @@ export class DeviceSession {
       console.info('[KDE-MVP] Device already trusted, skip pair request');
       return;
     }
+    const ts: number = Math.floor(Date.now() / 1000);
     let body: KdePairBody = {
       pair: pair,
-      timestamp: Math.floor(Date.now() / 1000)
+      timestamp: ts
     };
     let json: string = serializePacket('kdeconnect.pair', body);
     if (pair) {
+      this.pairingTimestamp = ts;
+      this.recomputeVerificationKey().catch(() => {
+      });
       this.pairRequestSentForGen = gen;
       // Android: wait 30s for peer to accept
       this.startPairTimer(DeviceSession.PAIR_REQUEST_TIMEOUT_MS, '配对超时，请重试');
@@ -2097,6 +2459,7 @@ export class DeviceSession {
     this.pendingPairAccept = false;
     this.lineBuffer = '';
     this.peerBattery = null;
+    this.clearVerificationState();
     this.stopBatteryReporting();
     this.teardownMprisReceiver();
     if (stopFindPhone) {
