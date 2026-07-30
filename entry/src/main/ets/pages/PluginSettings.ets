@@ -12,6 +12,7 @@ import {
   PLUGIN_PING,
   PLUGIN_RECEIVE_NOTIFICATIONS,
   PLUGIN_SHARE,
+  PLUGIN_SYSTEMVOLUME,
   PluginMeta,
   isPluginSupportedByPeer
 } from '../service/PluginRegistry';
@@ -36,7 +37,7 @@ interface PluginRow {
 @Entry
 @Component
 struct PluginSettings {
-  @StorageProp('statusBarHeight') statusBarHeight: number = 0;
+
   @StorageProp('navBarHeight') navBarHeight: number = 0;
   @State deviceId: string = '';
   @State deviceName: string = '';
@@ -92,6 +93,9 @@ struct PluginSettings {
     if (key === PLUGIN_MPRIS) {
       return $r('app.string.pref_plugin_mpris');
     }
+    if (key === PLUGIN_SYSTEMVOLUME) {
+      return $r('app.string.pref_plugin_systemvolume');
+    }
     if (key === PLUGIN_PING) {
       return $r('app.string.pref_plugin_ping');
     }
@@ -116,6 +120,9 @@ struct PluginSettings {
     }
     if (key === PLUGIN_MPRIS) {
       return $r('app.string.pref_plugin_mpris_desc');
+    }
+    if (key === PLUGIN_SYSTEMVOLUME) {
+      return $r('app.string.pref_plugin_systemvolume_desc');
     }
     if (key === PLUGIN_PING) {
       return $r('app.string.pref_plugin_ping_desc');
@@ -209,11 +216,6 @@ struct PluginSettings {
 
   build() {
     Column() {
-      Column()
-        .width('100%')
-        .height(this.statusBarHeight)
-        .backgroundColor(UiTheme.surface)
-
       KdeTopBar({
         title: $r('app.string.menu_plugin_settings'),
         showBack: true,
@@ -248,5 +250,6 @@ struct PluginSettings {
     .width('100%')
     .height('100%')
     .backgroundColor(UiTheme.pageBg)
+    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
   }
 }

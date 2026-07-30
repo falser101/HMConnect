@@ -6,6 +6,7 @@ import { AppSession } from '../app/AppSession';
 import { FindMyPhoneHelper } from '../common/FindMyPhoneHelper';
 import { AppNotifier } from '../common/AppNotifier';
 import { KdeBackgroundService } from '../service/KdeBackgroundService';
+import { RemoteMprisMediaSession } from '../service/RemoteMprisMediaSession';
 import { ImmersiveUtil } from '../common/ImmersiveUtil';
 import { UiTheme } from '../common/ui/UiTheme';
 
@@ -153,8 +154,8 @@ export default class EntryAbility extends UIAbility {
   onWindowStageCreate(windowStage: window.WindowStage): void {
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageCreate');
 
-    // Full-screen before first paint so status/nav bars blend with app surface.
-    ImmersiveUtil.prepaint(windowStage, UiTheme.pageBg, UiTheme.onSurface);
+    // Edge-to-edge before first paint: transparent system bars + continuous app chrome.
+    ImmersiveUtil.prepaint(windowStage, UiTheme.surface, UiTheme.onSurface);
 
     windowStage.loadContent('pages/Index', (err) => {
       if (err.code) {
@@ -162,7 +163,8 @@ export default class EntryAbility extends UIAbility {
         return;
       }
       hilog.info(DOMAIN, 'testTag', 'Succeeded in loading the content.');
-      ImmersiveUtil.applyChrome(UiTheme.pageBg, UiTheme.onSurface);
+      // Re-apply after content so system does not restore opaque status bar defaults.
+      ImmersiveUtil.applyChrome(UiTheme.surface, UiTheme.onSurface);
     });
   }
 
@@ -179,6 +181,12 @@ export default class EntryAbility extends UIAbility {
     // Re-assert continuous task after resume (may have been cancelled while backgrounded)
     KdeBackgroundService.getInstance().ensureRunning().catch((e: Error) => {
       hilog.warn(DOMAIN, 'testTag', 'BgSvc ensureRunning onForeground: %{public}s', e.message);
+    });
+    // Keep remote AVSession alive for lock-screen card after resume
+    const media = RemoteMprisMediaSession.getInstance();
+    media.setContext(this.context);
+    media.initSession().catch((e: Error) => {
+      hilog.warn(DOMAIN, 'testTag', 'RemoteMpris init onForeground: %{public}s', e.message);
     });
   }
 

@@ -141,12 +141,17 @@ export class VerificationKeyHelper {
   }
 
   private static async humanReadableHash(bytes: Uint8Array): Promise<string> {
-    const md: cryptoFramework.Md = cryptoFramework.createMd('SHA256');
-    const blob: cryptoFramework.DataBlob = { data: bytes };
-    await md.update(blob);
-    const digest: cryptoFramework.DataBlob = await md.digest();
-    const hex = VerificationKeyHelper.bytesToHex(digest.data);
-    return hex.substring(0, 8).toUpperCase();
+    try {
+      const md: cryptoFramework.Md = cryptoFramework.createMd('SHA256');
+      const blob: cryptoFramework.DataBlob = { data: bytes };
+      await md.update(blob);
+      const digest: cryptoFramework.DataBlob = await md.digest();
+      const hex = VerificationKeyHelper.bytesToHex(digest.data);
+      return hex.substring(0, 8).toUpperCase();
+    } catch (e) {
+      console.warn('[VerifyKey] humanReadableHash failed:', JSON.stringify(e));
+      return '';
+    }
   }
 
   private static bytesToHex(data: Uint8Array): string {

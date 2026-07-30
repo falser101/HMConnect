@@ -8,6 +8,8 @@
 export const PLUGIN_CLIPBOARD: string = 'clipboard';
 export const PLUGIN_SHARE: string = 'share';
 export const PLUGIN_MPRIS: string = 'mpris';
+/** Control remote system volume sinks (Android SystemVolumePlugin). */
+export const PLUGIN_SYSTEMVOLUME: string = 'systemvolume';
 export const PLUGIN_PING: string = 'ping';
 export const PLUGIN_BATTERY: string = 'battery';
 export const PLUGIN_FIND_MY_PHONE: string = 'findmyphone';
@@ -42,6 +44,13 @@ export const IMPLEMENTED_PLUGINS: PluginMeta[] = [
     enabledByDefault: true,
     incomingTypes: ['kdeconnect.mpris', 'kdeconnect.mpris.request'],
     outgoingTypes: ['kdeconnect.mpris', 'kdeconnect.mpris.request']
+  },
+  {
+    // Android SystemVolumePlugin — control remote device system volume
+    key: PLUGIN_SYSTEMVOLUME,
+    enabledByDefault: true,
+    incomingTypes: ['kdeconnect.systemvolume'],
+    outgoingTypes: ['kdeconnect.systemvolume.request']
   },
   {
     key: PLUGIN_PING,
@@ -112,6 +121,7 @@ export function pluginKeyForUiButton(uiKey: string): string | null {
     return PLUGIN_SHARE;
   }
   if (uiKey === 'multimedia') {
+    // Multimedia page covers MPRIS + system volume (Android MprisActivity tabs)
     return PLUGIN_MPRIS;
   }
   if (uiKey === 'send_clipboard') {
@@ -148,10 +158,18 @@ const UI_BUTTON_CAP_DEFS: UiButtonCapDef[] = [
     hideForPhone: false
   },
   {
-    // Control remote media (MprisPlugin) + expose local (MprisReceiver)
+    // Control remote media (MprisPlugin) + system volume + expose local (MprisReceiver)
     uiKey: 'multimedia',
-    supportedPacketTypes: ['kdeconnect.mpris', 'kdeconnect.mpris.request'],
-    outgoingPacketTypes: ['kdeconnect.mpris', 'kdeconnect.mpris.request'],
+    supportedPacketTypes: [
+      'kdeconnect.mpris',
+      'kdeconnect.mpris.request',
+      'kdeconnect.systemvolume'
+    ],
+    outgoingPacketTypes: [
+      'kdeconnect.mpris',
+      'kdeconnect.mpris.request',
+      'kdeconnect.systemvolume.request'
+    ],
     hideForPhone: false
   },
   {

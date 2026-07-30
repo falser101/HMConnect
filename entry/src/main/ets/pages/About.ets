@@ -7,7 +7,6 @@ import { KdeTopBar } from '../common/ui/KdeWidgets';
 @Entry
 @Component
 struct About {
-  @StorageProp('statusBarHeight') statusBarHeight: number = 0;
   @StorageProp('navBarHeight') navBarHeight: number = 0;
   @State logoScale: number = 1;
 
@@ -23,11 +22,6 @@ struct About {
 
   build() {
     Column() {
-      Column()
-        .width('100%')
-        .height(this.statusBarHeight)
-        .backgroundColor(UiTheme.surface)
-
       KdeTopBar({
         title: '关于',
         showBack: true,

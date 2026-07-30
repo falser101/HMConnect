@@ -5,7 +5,13 @@ import { AppSession } from '../app/AppSession';
 import { AppNotifier } from '../common/AppNotifier';
 import { DeviceListItem, KdeStatus, ConnectionState, FileSendInfo, PairUiState } from '../service/KdeTypes';
 import { BatteryHelper } from '../common/BatteryHelper';
-import { goBack, hostContext, pushPage, routeParams } from '../common/NavUtil';
+import {
+  DeviceDetailRouteParams,
+  goBack,
+  hostContext,
+  pushPage,
+  routeParams
+} from '../common/NavUtil';
 import { UiTheme } from '../common/ui/UiTheme';
 import { KdeIcon, KdeIconRes } from '../common/ui/KdeIcons';
 import { KdeTopBar, KdePrimaryButton } from '../common/ui/KdeWidgets';
@@ -24,7 +30,8 @@ import { PluginSettingsStore } from '../store/PluginSettingsStore';
 
 interface DeviceDetailParams {
   deviceId: string;
-  action?: string; // 'sendFile' from notification action
+  /** Notification / deep-link actions: sendFile | sendClipboard */
+  action?: string;
 }
 
 /** Plugin button definition — matches Android Plugin.PluginUiButton */
@@ -45,7 +52,7 @@ interface PluginSettingsParams {
 @Entry
 @Component
 struct DeviceDetail {
-  @StorageProp('statusBarHeight') statusBarHeight: number = 0;
+
   @StorageProp('navBarHeight') navBarHeight: number = 0;
   @State deviceId: string = '';
   @State item: DeviceListItem | null = null;
@@ -122,8 +129,12 @@ struct DeviceDetail {
     this.ensureSubscriptions();
   }
 
-  /** Handle notification action: send-file. */
+  /** Handle notification / deep-link actions. */
   private handleNotificationAction(action: string): void {
+    if (action === 'sendClipboard') {
+      this.trySendClipboard();
+      return;
+    }
     if (action === 'sendFile') {
       this.onSendFiles();
     }
@@ -392,12 +403,9 @@ struct DeviceDetail {
       this.showToast($r('app.string.plugin_disabled_toast'));
       return;
     }
-    const ctx = this.getUIContext();
-    if (ctx && this.item) {
-      ctx.getRouter().pushUrl({
-        url: 'pages/MprisControl',
-        params: { deviceId: this.item.deviceId }
-      });
+    if (this.item) {
+      const params: DeviceDetailRouteParams = { deviceId: this.item.deviceId };
+      pushPage(this.getUIContext(), 'pages/MprisControl', params);
     }
   }
 
@@ -1122,24 +1130,35 @@ struct DeviceDetail {
       PasteButton()
         .padding({ top: 12, bottom: 12, left: 24, right: 24 })
         .onClick((event: ClickEvent, result: number) => {
-          if (result === 0) { // PasteButtonOnClickResult.SUCCESS = 0
-            pasteboard.getSystemPasteboard().getData((err: Error, pasteData: pasteboard.PasteData) => {
-              if (err) {
-                console.error('[DeviceDetail] paste error:', err.message);
-                this.showPasteOverlay = false;
-                return;
-              }
-              const text = pasteData.getPrimaryText();
-              if (text && text.trim().length > 0) {
-                if (this.deviceId.length > 0) {
-                  this.session.getService().sendClipboardTextTo(this.deviceId, text.trim());
-                } else {
-                  this.session.getService().sendClipboardText(text.trim());
+          // PasteButton grants temporary pasteboard access on SUCCESS (result === 0).
+          // Do not declare ohos.permission.READ_PASTEBOARD — restricted, install fails (9568289).
+          if (result === 0) {
+            try {
+              pasteboard.getSystemPasteboard().getData((err: Error, pasteData: pasteboard.PasteData) => {
+                if (err) {
+                  console.error('[DeviceDetail] paste error:', err.message);
+                  this.showPasteOverlay = false;
+                  return;
                 }
-                this.showToast($r('app.string.clipboard_send_toast'));
-              }
+                try {
+                  const text = pasteData.getPrimaryText();
+                  if (text && text.trim().length > 0) {
+                    if (this.deviceId.length > 0) {
+                      this.session.getService().sendClipboardTextTo(this.deviceId, text.trim());
+                    } else {
+                      this.session.getService().sendClipboardText(text.trim());
+                    }
+                    this.showToast($r('app.string.clipboard_send_toast'));
+                  }
+                } catch (textErr) {
+                  console.error('[DeviceDetail] getPrimaryText failed:', JSON.stringify(textErr));
+                }
+                this.showPasteOverlay = false;
+              });
+            } catch (e) {
+              console.error('[DeviceDetail] pasteboard getData failed:', JSON.stringify(e));
               this.showPasteOverlay = false;
-            });
+            }
           }
         })
     }
@@ -1157,11 +1176,6 @@ struct DeviceDetail {
   build() {
     Stack() {
       Column() {
-        Column()
-          .width('100%')
-          .height(this.statusBarHeight)
-          .backgroundColor(UiTheme.surface)
-
         KdeTopBar({
           title: this.item !== null ? this.item.deviceName : $r('app.string.device_detail_title'),
           subtitle: this.toolbarSubtitle(),

@@ -29,11 +29,15 @@ import {
   PACKET_TYPE_SHARE_REQUEST,
   PACKET_TYPE_MPRIS,
   PACKET_TYPE_MPRIS_REQUEST,
+  PACKET_TYPE_SYSTEMVOLUME,
+  PACKET_TYPE_SYSTEMVOLUME_REQUEST,
   PACKET_TYPE_NOTIFICATION,
   PACKET_TYPE_NOTIFICATION_REQUEST,
   KdeNotificationBody,
   KdeNotificationRequestBody,
   MprisPlayerState,
+  MPRIS_DEFAULT_SEEK_US,
+  SystemVolumeSink,
   sanitizeDeviceName,
   serializePacket,
   serializePacketWithPayload,
@@ -49,12 +53,14 @@ import {
   PLUGIN_PING,
   PLUGIN_RECEIVE_NOTIFICATIONS,
   PLUGIN_SHARE,
+  PLUGIN_SYSTEMVOLUME,
   pluginKeyForPacketType
 } from './PluginRegistry';
 import { utf8Decode } from '../common/Utf8';
 import { BatteryHelper } from '../common/BatteryHelper';
 import { FindMyPhoneHelper } from '../common/FindMyPhoneHelper';
 import { VerificationKeyHelper } from '../common/VerificationKeyHelper';
+import { RemoteMprisMediaSession } from './RemoteMprisMediaSession';
 
 /**
  * Per-device connection session (one peer).
@@ -71,6 +77,10 @@ export class DeviceSession {
   private bridgeBasePort: number = 37564;
 
   private tlsSocket: socket.TLSSocket | null = null;
+  /** Serialize TLS sends — concurrent send() corrupts/kills OHOS TLS (errno 6 / 2303506). */
+  private tlsSendQueue: string[] = [];
+  private tlsSendBusy: boolean = false;
+  private tlsSendDead: boolean = false;
   private bridgeRemote: socket.TCPSocketConnection | null = null;
   private bridgeLocalAccepted: socket.TCPSocketConnection | null = null;
   private bridgeLocalServer: socket.TCPSocketServer | null = null;
@@ -108,9 +118,24 @@ export class DeviceSession {
   private pairTimeoutTimer: number = -1;
   private static readonly PAIR_REQUEST_TIMEOUT_MS: number = 30000;
   private static readonly PAIR_PEER_TIMEOUT_MS: number = 25000;
-  /** Latest MPRIS player state from remote device. */
+  /** Latest MPRIS player state from remote device (current/selected). */
   private mprisPlayer: MprisPlayerState | null = null;
+  /** All known remote MPRIS players (Android MprisPlugin.players). */
+  private mprisPlayers: Map<string, MprisPlayerState> = new Map();
+  /** User picked a player in UI — do not auto-switch to another playing player. */
+  private mprisUserSelected: boolean = false;
+  /**
+   * Player name currently shown on system media card (Android notificationPlayer).
+   * System play/pause/next target this player, not necessarily the UI selection.
+   */
+  private remoteMediaPlayerName: string = '';
   private onMprisChange?: (player: MprisPlayerState | null) => void;
+  private onMprisPlayerListChange?: (names: string[]) => void;
+  /** Peer supports album-art payload transfer. */
+  private supportAlbumArtPayload: boolean = false;
+  /** Remote system volume sinks (Android SystemVolumePlugin). */
+  private systemVolumeSinks: SystemVolumeSink[] = [];
+  private onSystemVolumeChange?: (sinks: SystemVolumeSink[]) => void;
   /** Local media state for MPRIS receiver (remote controls us). */
   private localPlaying: boolean = false;
   private localVolume: number = 50;
@@ -394,6 +419,11 @@ export class DeviceSession {
       console.info('[KDE-MVP] flushed pending pair-accept');
     }
 
+    // New TLS is healthy
+    this.tlsSendDead = false;
+    this.tlsSendQueue = [];
+    this.tlsSendBusy = false;
+
     this.startBatteryReporting();
     this.captureTlsCertificates(fromOutbound);
     if (this.context) {
@@ -417,6 +447,10 @@ export class DeviceSession {
       console.info('[KDE-MVP] Trusted device, skip pair request');
       // Android ReceiveNotificationsPlugin.onCreate → request existing notifications
       this.requestPeerNotifications();
+      // Android MprisPlugin.onCreate → requestPlayerList; SystemVolume desktop
+      // auto-pushes sinks on connected(), but requestSinks covers late UI open / race.
+      this.requestMprisPlayerList();
+      this.requestSystemVolumeSinks();
       return;
     }
     this.emit('connected', '已加密连接', {
@@ -650,24 +684,259 @@ export class DeviceSession {
     return this.mprisPlayer;
   }
 
+  /** Sorted player names (Android MprisPlugin.playerList). */
+  public getMprisPlayerList(): string[] {
+    const names: string[] = [];
+    this.mprisPlayers.forEach((_p: MprisPlayerState, name: string) => {
+      names.push(name);
+    });
+    names.sort();
+    return names;
+  }
+
   public setMprisChangeListener(cb: (player: MprisPlayerState | null) => void): void {
     this.onMprisChange = cb;
   }
 
-  private handleMprisPacket(body: object): void {
+  public setMprisPlayerListListener(cb: (names: string[]) => void): void {
+    this.onMprisPlayerListChange = cb;
+  }
+
+  public getSystemVolumeSinks(): SystemVolumeSink[] {
+    return this.systemVolumeSinks.slice();
+  }
+
+  public setSystemVolumeChangeListener(cb: (sinks: SystemVolumeSink[]) => void): void {
+    this.onSystemVolumeChange = cb;
+  }
+
+  private emptyMprisPlayer(name: string, now: number): MprisPlayerState {
+    return {
+      player: name,
+      title: '',
+      artist: '',
+      album: '',
+      isPlaying: false,
+      canPlay: true,
+      canPause: true,
+      canGoNext: true,
+      canGoPrevious: true,
+      canSeek: true,
+      volume: 50,
+      length: -1,
+      pos: 0,
+      lastPositionTime: now,
+      loopStatus: '',
+      loopStatusAllowed: false,
+      shuffle: false,
+      shuffleAllowed: false,
+      albumArtUrl: '',
+      albumArtLocalPath: ''
+    };
+  }
+
+  private copyMprisPlayer(p: MprisPlayerState): MprisPlayerState {
+    return {
+      player: p.player,
+      title: p.title,
+      artist: p.artist,
+      album: p.album,
+      isPlaying: p.isPlaying,
+      canPlay: p.canPlay,
+      canPause: p.canPause,
+      canGoNext: p.canGoNext,
+      canGoPrevious: p.canGoPrevious,
+      canSeek: p.canSeek,
+      volume: p.volume,
+      length: p.length,
+      pos: p.pos,
+      lastPositionTime: p.lastPositionTime,
+      loopStatus: p.loopStatus,
+      loopStatusAllowed: p.loopStatusAllowed,
+      shuffle: p.shuffle,
+      shuffleAllowed: p.shuffleAllowed,
+      albumArtUrl: p.albumArtUrl,
+      albumArtLocalPath: p.albumArtLocalPath
+    };
+  }
+
+  private storeMprisPlayer(p: MprisPlayerState): void {
+    this.mprisPlayers.set(p.player, p);
+    if (this.mprisPlayer && this.mprisPlayer.player === p.player) {
+      this.mprisPlayer = p;
+    }
+  }
+
+  private notifyMprisChange(): void {
+    if (this.onMprisChange) {
+      this.onMprisChange(this.mprisPlayer);
+    }
+    // Android MprisMediaSession.updateMediaNotification
+    this.syncRemoteMediaSession();
+  }
+
+  /**
+   * Mirror preferred remote player onto system AVSession (status bar / lock screen).
+   */
+  private syncRemoteMediaSession(): void {
+    const media = RemoteMprisMediaSession.getInstance();
+    if (this.context) {
+      media.setContext(this.context);
+    }
+    if (!this.isPluginEnabled(PLUGIN_MPRIS) || !this.isTlsLive()) {
+      this.remoteMediaPlayerName = '';
+      media.clearIfTarget(this);
+      return;
+    }
+    // Prefer a currently playing player (Android findPlayer); else keep last media player / UI selection
+    let preferred: MprisPlayerState | null = null;
+    this.mprisPlayers.forEach((p: MprisPlayerState) => {
+      if (p.isPlaying && preferred === null) {
+        preferred = p;
+      }
+    });
+    if (preferred === null && this.remoteMediaPlayerName.length > 0) {
+      preferred = this.mprisPlayers.get(this.remoteMediaPlayerName) ?? null;
+    }
+    if (preferred === null) {
+      preferred = this.mprisPlayer;
+    }
+    this.remoteMediaPlayerName = preferred ? preferred.player : '';
+    const peerName = this.peerDevice?.deviceName ?? '';
+    media.updateFromRemote(this, peerName, preferred);
+  }
+
+  /** UI controls: selected player. System card uses remoteMediaPlayer(). */
+  private uiCommandPlayer(): MprisPlayerState | null {
+    return this.mprisPlayer;
+  }
+
+  /** System media card target (Android notificationPlayer). */
+  private remoteMediaPlayer(): MprisPlayerState | null {
+    if (this.remoteMediaPlayerName.length > 0) {
+      const p = this.mprisPlayers.get(this.remoteMediaPlayerName);
+      if (p) {
+        return p;
+      }
+    }
+    return this.mprisPlayer;
+  }
+
+  private notifyMprisPlayerListChange(): void {
+    if (this.onMprisPlayerListChange) {
+      this.onMprisPlayerListChange(this.getMprisPlayerList());
+    }
+  }
+
+  private pickPreferredMprisPlayer(): void {
+    // Keep user selection if still present
+    if (this.mprisUserSelected && this.mprisPlayer &&
+      this.mprisPlayers.has(this.mprisPlayer.player)) {
+      this.mprisPlayer = this.mprisPlayers.get(this.mprisPlayer.player) ?? null;
+      return;
+    }
+    // Prefer a playing player; else keep current if still present; else first known.
+    let playing: MprisPlayerState | null = null;
+    this.mprisPlayers.forEach((p: MprisPlayerState) => {
+      if (p.isPlaying && playing === null) {
+        playing = p;
+      }
+    });
+    if (playing !== null) {
+      this.mprisPlayer = playing;
+      return;
+    }
+    if (this.mprisPlayer && this.mprisPlayers.has(this.mprisPlayer.player)) {
+      this.mprisPlayer = this.mprisPlayers.get(this.mprisPlayer.player) ?? null;
+      return;
+    }
+    let first: MprisPlayerState | null = null;
+    this.mprisPlayers.forEach((p: MprisPlayerState) => {
+      if (first === null) {
+        first = p;
+      }
+    });
+    this.mprisPlayer = first;
+  }
+
+  /** Android spinner: user selects target player. */
+  public selectMprisPlayer(name: string): void {
+    if (name.length === 0) {
+      return;
+    }
+    const p = this.mprisPlayers.get(name);
+    if (!p) {
+      return;
+    }
+    this.mprisUserSelected = true;
+    this.mprisPlayer = p;
+    this.requestMprisPlayerStatus(name);
+    this.notifyMprisChange();
+  }
+
+  private handleMprisPacket(body: object, packet?: KdePacket<object>): void {
     const b = body as Record<string, Object>;
+    const now: number = Date.now();
+
+    // Album art payload transfer (Android MprisPlugin transferringAlbumArt)
+    if (b['transferringAlbumArt'] === true) {
+      const artUrl: string = typeof b['albumArtUrl'] === 'string' ? b['albumArtUrl'] as string : '';
+      if (packet && artUrl.length > 0) {
+        this.receiveAlbumArtPayload(packet, artUrl).catch((e: Error) => {
+          console.warn('[KDE-MVP] album art payload failed:', e.message);
+        });
+      }
+      return;
+    }
+
+    if (typeof b['supportAlbumArtPayload'] === 'boolean') {
+      this.supportAlbumArtPayload = b['supportAlbumArtPayload'] as boolean;
+    }
+
+    // Android: playerList may arrive with or without a player status payload
+    if (b['playerList'] !== undefined && b['playerList'] !== null) {
+      const listRaw = b['playerList'];
+      const names: string[] = [];
+      if (Array.isArray(listRaw)) {
+        const arr = listRaw as Object[];
+        for (let i = 0; i < arr.length; i++) {
+          if (typeof arr[i] === 'string') {
+            names.push(arr[i] as string);
+          }
+        }
+      }
+      const keep: Set<string> = new Set(names);
+      const toRemove: string[] = [];
+      this.mprisPlayers.forEach((_p: MprisPlayerState, name: string) => {
+        if (!keep.has(name)) {
+          toRemove.push(name);
+        }
+      });
+      for (let r = 0; r < toRemove.length; r++) {
+        this.mprisPlayers.delete(toRemove[r]);
+      }
+      for (let i = 0; i < names.length; i++) {
+        const name = names[i];
+        if (!this.mprisPlayers.has(name)) {
+          this.mprisPlayers.set(name, this.emptyMprisPlayer(name, now));
+          this.requestMprisPlayerStatus(name);
+        }
+      }
+      if (this.mprisPlayer && !this.mprisPlayers.has(this.mprisPlayer.player)) {
+        this.mprisUserSelected = false;
+        this.mprisPlayer = null;
+      }
+      this.pickPreferredMprisPlayer();
+      this.notifyMprisPlayerListChange();
+      this.notifyMprisChange();
+    }
+
     const player: string = typeof b['player'] === 'string' ? b['player'] as string : '';
     if (player.length === 0) {
       return;
     }
-    const now: number = Date.now();
-    const prev: MprisPlayerState = this.mprisPlayer ?? {
-      player: '', title: '', artist: '', album: '',
-      isPlaying: false, canPlay: true, canPause: true,
-      canGoNext: true, canGoPrevious: true, canSeek: true,
-      volume: 50, length: -1, pos: 0, lastPositionTime: now,
-      loopStatus: '', shuffle: false
-    };
+    const hadPlayer: boolean = this.mprisPlayers.has(player);
+    const prev: MprisPlayerState = this.mprisPlayers.get(player) ?? this.emptyMprisPlayer(player, now);
     const title: string = typeof b['title'] === 'string' ? b['title'] as string : prev.title;
     const artist: string = typeof b['artist'] === 'string' ? b['artist'] as string : prev.artist;
     const album: string = typeof b['album'] === 'string' ? b['album'] as string : prev.album;
@@ -675,50 +944,330 @@ export class DeviceSession {
     const canPlay: boolean = typeof b['canPlay'] === 'boolean' ? b['canPlay'] as boolean : prev.canPlay;
     const canPause: boolean = typeof b['canPause'] === 'boolean' ? b['canPause'] as boolean : prev.canPause;
     const canGoNext: boolean = typeof b['canGoNext'] === 'boolean' ? b['canGoNext'] as boolean : prev.canGoNext;
-    const canGoPrevious: boolean = typeof b['canGoPrevious'] === 'boolean' ? b['canGoPrevious'] as boolean : prev.canGoPrevious;
+    const canGoPrevious: boolean =
+      typeof b['canGoPrevious'] === 'boolean' ? b['canGoPrevious'] as boolean : prev.canGoPrevious;
     const canSeek: boolean = typeof b['canSeek'] === 'boolean' ? b['canSeek'] as boolean : prev.canSeek;
     const volume: number = typeof b['volume'] === 'number' ? b['volume'] as number : prev.volume;
     const length: number = typeof b['length'] === 'number' ? b['length'] as number : prev.length;
     let pos: number = typeof b['pos'] === 'number' ? b['pos'] as number : prev.pos;
-    const loopStatus: string = typeof b['loopStatus'] === 'string' ? b['loopStatus'] as string : prev.loopStatus;
-    const shuffle: boolean = typeof b['shuffle'] === 'boolean' ? b['shuffle'] as boolean : prev.shuffle;
+    const lastPositionTime: number = typeof b['pos'] === 'number' ? now : prev.lastPositionTime;
 
-    this.mprisPlayer = {
+    let loopStatus: string = prev.loopStatus;
+    let loopStatusAllowed: boolean = prev.loopStatusAllowed;
+    if (typeof b['loopStatus'] === 'string') {
+      loopStatus = b['loopStatus'] as string;
+      loopStatusAllowed = true;
+    }
+    let shuffle: boolean = prev.shuffle;
+    let shuffleAllowed: boolean = prev.shuffleAllowed;
+    if (typeof b['shuffle'] === 'boolean') {
+      shuffle = b['shuffle'] as boolean;
+      shuffleAllowed = true;
+    }
+
+    let albumArtUrl: string = prev.albumArtUrl;
+    let albumArtLocalPath: string = prev.albumArtLocalPath;
+    if (typeof b['albumArtUrl'] === 'string') {
+      const rawUrl: string = b['albumArtUrl'] as string;
+      if (this.isAllowedAlbumArtUrl(rawUrl)) {
+        if (rawUrl !== prev.albumArtUrl) {
+          albumArtLocalPath = '';
+        }
+        albumArtUrl = rawUrl;
+        // file/kdeconnect → ask peer to transfer (Android AlbumArtCache)
+        if (this.needsRemoteAlbumArtFetch(rawUrl)) {
+          this.askTransferAlbumArt(player, rawUrl);
+        }
+      } else if (rawUrl.length === 0) {
+        albumArtUrl = '';
+        albumArtLocalPath = '';
+      }
+    }
+
+    const updated: MprisPlayerState = {
       player, title, artist, album, isPlaying,
       canPlay, canPause, canGoNext, canGoPrevious, canSeek,
-      volume, length, pos, lastPositionTime: now,
-      loopStatus, shuffle
+      volume, length, pos, lastPositionTime,
+      loopStatus, loopStatusAllowed, shuffle, shuffleAllowed,
+      albumArtUrl, albumArtLocalPath
     };
+    this.mprisPlayers.set(player, updated);
+    if (!hadPlayer) {
+      this.notifyMprisPlayerListChange();
+    }
 
-    console.info(`[KDE-MVP] MPRIS: ${title} - ${artist} playing=${isPlaying}`);
-    if (this.onMprisChange) {
-      this.onMprisChange(this.mprisPlayer);
+    // Refresh selected player; auto-promote only if user has not locked selection
+    if (this.mprisPlayer && this.mprisPlayer.player === player) {
+      this.mprisPlayer = updated;
+    } else if (!this.mprisUserSelected) {
+      if (isPlaying || this.mprisPlayer === null) {
+        this.mprisPlayer = updated;
+      } else if (!this.mprisPlayers.has(this.mprisPlayer.player)) {
+        this.pickPreferredMprisPlayer();
+      }
+    } else if (this.mprisPlayer && !this.mprisPlayers.has(this.mprisPlayer.player)) {
+      this.mprisUserSelected = false;
+      this.pickPreferredMprisPlayer();
+    }
+
+    console.info(`[KDE-MVP] MPRIS: ${title} - ${artist} playing=${isPlaying} vol=${volume}`);
+    this.notifyMprisChange();
+  }
+
+  private isAllowedAlbumArtUrl(url: string): boolean {
+    if (url.length === 0) {
+      return false;
+    }
+    return url.startsWith('http://') || url.startsWith('https://') ||
+      url.startsWith('file://') || url.startsWith('kdeconnect://') ||
+      url.startsWith('file:') || url.startsWith('kdeconnect:');
+  }
+
+  private needsRemoteAlbumArtFetch(url: string): boolean {
+    return url.startsWith('file:') || url.startsWith('kdeconnect:');
+  }
+
+  private askTransferAlbumArt(player: string, albumArtUrl: string): void {
+    if (!this.supportAlbumArtPayload || player.length === 0 || albumArtUrl.length === 0) {
+      return;
+    }
+    const cmd: Record<string, Object> = {
+      'player': player,
+      'albumArtUrl': albumArtUrl
+    };
+    this.sendMprisCommand(cmd);
+  }
+
+  /**
+   * Receive album art bytes on payload channel → cache file (Android AlbumArtCache.payloadToDiskCache).
+   */
+  private async receiveAlbumArtPayload(packet: KdePacket<object>, albumArtUrl: string): Promise<void> {
+    if (!packet.payloadTransferInfo || !packet.payloadTransferInfo.port) {
+      return;
+    }
+    if (!this.peerDevice || !this.context) {
+      return;
+    }
+    const payloadSize: number = packet.payloadSize ?? 0;
+    if (payloadSize <= 0) {
+      return;
+    }
+    const payloadPort: number = packet.payloadTransferInfo.port;
+    const peerIp: string = this.peerDevice.ip;
+    let tcp: socket.TCPSocket | null = null;
+    let tls: socket.TLSSocket | null = null;
+    try {
+      tcp = socket.constructTCPSocketInstance();
+      await new Promise<void>((resolve: () => void, reject: (e: Error) => void) => {
+        tcp!.connect({
+          address: { address: peerIp, port: payloadPort, family: 1 },
+          timeout: 10000
+        }, (err: Object) => {
+          if (err) {
+            reject(new Error('Album art TCP connect failed'));
+          } else {
+            resolve();
+          }
+        });
+      });
+      tls = socket.constructTLSSocketInstance(tcp);
+      const secureOpts: socket.TLSSecureOptions = {
+        protocols: [socket.Protocol.TLSv12, socket.Protocol.TLSv13]
+      };
+      if (this.certPem.length > 0 && this.keyPem.length > 0) {
+        secureOpts.cert = this.certPem;
+        secureOpts.key = this.keyPem;
+      }
+      const chunks: Uint8Array[] = [];
+      let totalRead: number = 0;
+      let recvResolve: (() => void) | null = null;
+      let recvReject: ((e: Error) => void) | null = null;
+      let recvTimer: number = -1;
+      tls.on('message', (v: socket.SocketMessageInfo) => {
+        const srcLen: number = v.message.byteLength;
+        if (srcLen === 0) {
+          return;
+        }
+        const src: Uint8Array = new Uint8Array(v.message);
+        const copy: Uint8Array = new Uint8Array(srcLen);
+        copy.set(src);
+        chunks.push(copy);
+        totalRead += srcLen;
+        if (totalRead >= payloadSize && recvResolve) {
+          clearTimeout(recvTimer);
+          recvResolve();
+        }
+      });
+      tls.on('close', () => {
+        clearTimeout(recvTimer);
+        if (totalRead >= payloadSize) {
+          recvResolve?.();
+        } else {
+          recvReject?.(new Error(`Album art closed early: ${totalRead}/${payloadSize}`));
+        }
+      });
+      tls.on('error', () => {
+        clearTimeout(recvTimer);
+        recvReject?.(new Error('Album art TLS error'));
+      });
+      await new Promise<void>((resolve: () => void, reject: (e: Error) => void) => {
+        tls!.connect({
+          address: { address: peerIp, port: payloadPort, family: 1 },
+          secureOptions: secureOpts,
+          skipRemoteValidation: true
+        }, (err: Object) => {
+          if (err) {
+            reject(new Error('Album art TLS handshake failed'));
+          } else {
+            resolve();
+          }
+        });
+      });
+      await new Promise<void>((resolve: () => void, reject: (e: Error) => void) => {
+        recvResolve = resolve;
+        recvReject = reject;
+        recvTimer = setTimeout(() => {
+          reject(new Error('Album art payload timeout'));
+        }, 20000) as number;
+        if (totalRead >= payloadSize) {
+          clearTimeout(recvTimer);
+          resolve();
+        }
+      });
+      const artDir: string = `${this.context.cacheDir}/album_art`;
+      try {
+        fileIo.mkdirSync(artDir);
+      } catch (_e) {
+        // exists
+      }
+      // Stable short name from url hash
+      let hash: number = 0;
+      for (let i = 0; i < albumArtUrl.length; i++) {
+        hash = ((hash << 5) - hash) + albumArtUrl.charCodeAt(i);
+        hash |= 0;
+      }
+      const localPath: string = `${artDir}/art_${Math.abs(hash)}.img`;
+      const outFile = fileIo.openSync(localPath,
+        fileIo.OpenMode.CREATE | fileIo.OpenMode.WRITE_ONLY | fileIo.OpenMode.TRUNC);
+      for (let i = 0; i < chunks.length; i++) {
+        fileIo.writeSync(outFile.fd, chunks[i].buffer);
+      }
+      fileIo.closeSync(outFile);
+      console.info(`[KDE-MVP] Album art saved: ${localPath} (${totalRead} bytes)`);
+      // Attach to any player with this albumArtUrl
+      this.mprisPlayers.forEach((p: MprisPlayerState, name: string) => {
+        if (p.albumArtUrl === albumArtUrl) {
+          const u = this.copyMprisPlayer(p);
+          u.albumArtLocalPath = localPath;
+          this.mprisPlayers.set(name, u);
+          if (this.mprisPlayer && this.mprisPlayer.player === name) {
+            this.mprisPlayer = u;
+          }
+        }
+      });
+      this.notifyMprisChange();
+    } catch (e) {
+      console.warn('[KDE-MVP] receiveAlbumArtPayload:', JSON.stringify(e));
+    } finally {
+      try {
+        tls?.off('message');
+      } catch (_e) {
+      }
+      try {
+        tls?.close();
+      } catch (_e) {
+      }
+      try {
+        tcp?.close();
+      } catch (_e) {
+      }
     }
   }
 
   private sendMprisCommand(cmd: Record<string, Object>): void {
     if (!this.isPluginEnabled(PLUGIN_MPRIS)) {
+      console.warn('[KDE-MVP] mpris: plugin disabled');
       return;
     }
     if (!this.isTlsLive()) {
+      console.warn('[KDE-MVP] mpris: TLS not live, command dropped', JSON.stringify(cmd));
       return;
     }
     const json: string = serializePacket(PACKET_TYPE_MPRIS_REQUEST, cmd);
-    this.sendTls(json, () => {});
+    this.sendTls(json, (err: Error | null) => {
+      if (err) {
+        console.error('[KDE-MVP] mpris send failed:', err.message, JSON.stringify(cmd));
+      }
+    });
+  }
+
+  /** Android MprisPlugin.requestPlayerList */
+  public requestMprisPlayerList(): void {
+    if (!this.isPluginEnabled(PLUGIN_MPRIS) || !this.isTlsLive()) {
+      return;
+    }
+    const cmd: Record<string, Object> = { 'requestPlayerList': true };
+    this.sendMprisCommand(cmd);
+  }
+
+  /** Android MprisPlugin.requestPlayerStatus (nowPlaying + volume). */
+  private requestMprisPlayerStatus(player: string): void {
+    if (player.length === 0) {
+      return;
+    }
+    const cmd: Record<string, Object> = {
+      'player': player,
+      'requestNowPlaying': true,
+      'requestVolume': true
+    };
+    this.sendMprisCommand(cmd);
   }
 
   public mprisPlayPause(): void {
-    const p = this.mprisPlayer;
+    const p = this.uiCommandPlayer();
     if (!p || p.player.length === 0) {
+      return;
+    }
+    if (!p.canPlay && !p.canPause) {
       return;
     }
     const cmd: Record<string, Object> = { 'player': p.player, 'action': 'PlayPause' };
     this.sendMprisCommand(cmd);
   }
 
-  public mprisPrevious(): void {
-    const p = this.mprisPlayer;
+  /** Android MediaSession onPlay → action Play (system media card). */
+  public mprisPlay(): void {
+    const p = this.remoteMediaPlayer();
+    if (!p || p.player.length === 0 || !p.canPlay) {
+      return;
+    }
+    const cmd: Record<string, Object> = { 'player': p.player, 'action': 'Play' };
+    this.sendMprisCommand(cmd);
+  }
+
+  /** Android MediaSession onPause → action Pause (system media card). */
+  public mprisPause(): void {
+    const p = this.remoteMediaPlayer();
+    if (!p || p.player.length === 0 || !p.canPause) {
+      return;
+    }
+    const cmd: Record<string, Object> = { 'player': p.player, 'action': 'Pause' };
+    this.sendMprisCommand(cmd);
+  }
+
+  public mprisStop(): void {
+    // Prefer system-card player when active; UI stop uses selection via same name often
+    const p = this.remoteMediaPlayer() ?? this.uiCommandPlayer();
     if (!p || p.player.length === 0) {
+      return;
+    }
+    const cmd: Record<string, Object> = { 'player': p.player, 'action': 'Stop' };
+    this.sendMprisCommand(cmd);
+  }
+
+  public mprisPrevious(): void {
+    const p = this.uiCommandPlayer();
+    if (!p || p.player.length === 0 || !p.canGoPrevious) {
       return;
     }
     const cmd: Record<string, Object> = { 'player': p.player, 'action': 'Previous' };
@@ -726,30 +1275,335 @@ export class DeviceSession {
   }
 
   public mprisNext(): void {
-    const p = this.mprisPlayer;
-    if (!p || p.player.length === 0) {
+    const p = this.uiCommandPlayer();
+    if (!p || p.player.length === 0 || !p.canGoNext) {
       return;
     }
     const cmd: Record<string, Object> = { 'player': p.player, 'action': 'Next' };
     this.sendMprisCommand(cmd);
   }
 
-  public mprisSetVolume(vol: number): void {
-    const p = this.mprisPlayer;
-    if (!p || p.player.length === 0) {
+  /** System media card next/prev (may differ from UI selection). */
+  public mprisMediaNext(): void {
+    const p = this.remoteMediaPlayer();
+    if (!p || p.player.length === 0 || !p.canGoNext) {
       return;
     }
-    const cmd: Record<string, Object> = { 'player': p.player, 'setVolume': vol };
+    const cmd: Record<string, Object> = { 'player': p.player, 'action': 'Next' };
     this.sendMprisCommand(cmd);
   }
 
-  public mprisSeek(offset: number): void {
-    const p = this.mprisPlayer;
-    if (!p || p.player.length === 0) {
+  public mprisMediaPrevious(): void {
+    const p = this.remoteMediaPlayer();
+    if (!p || p.player.length === 0 || !p.canGoPrevious) {
       return;
     }
-    const cmd: Record<string, Object> = { 'player': p.player, 'Seek': offset };
+    const cmd: Record<string, Object> = { 'player': p.player, 'action': 'Previous' };
     this.sendMprisCommand(cmd);
+  }
+
+  public mprisSetVolume(vol: number): void {
+    const p = this.uiCommandPlayer();
+    // Android isSetVolumeAllowed: volume > -1
+    if (!p || p.player.length === 0 || p.volume < 0) {
+      return;
+    }
+    const clamped: number = Math.max(0, Math.min(100, Math.round(vol)));
+    const cmd: Record<string, Object> = { 'player': p.player, 'setVolume': clamped };
+    this.sendMprisCommand(cmd);
+    const updated = this.copyMprisPlayer(p);
+    updated.volume = clamped;
+    this.storeMprisPlayer(updated);
+    this.notifyMprisChange();
+  }
+
+  /** Hardware volume keys: step by ±percent of max 100 (Android calculateNewVolume). */
+  public mprisVolumeStep(stepPercent: number): void {
+    const p = this.mprisPlayer;
+    if (!p || p.player.length === 0 || p.volume < 0) {
+      return;
+    }
+    const next: number = Math.max(0, Math.min(100, p.volume + stepPercent));
+    if (next === p.volume) {
+      return;
+    }
+    this.mprisSetVolume(next);
+  }
+
+  /**
+   * Seek by offset in microseconds (Android sendSeek / MPRIS Seek).
+   * Also optimistically adjusts pos (ms).
+   */
+  public mprisSeek(offsetUs: number): void {
+    const p = this.remoteMediaPlayer() ?? this.uiCommandPlayer();
+    if (!p || p.player.length === 0 || !this.isMprisSeekAllowed(p)) {
+      return;
+    }
+    const cmd: Record<string, Object> = { 'player': p.player, 'Seek': Math.round(offsetUs) };
+    this.sendMprisCommand(cmd);
+    const offsetMs: number = Math.round(offsetUs / 1000);
+    const updated = this.copyMprisPlayer(p);
+    let newPos: number = p.pos + offsetMs;
+    if (p.length > 0) {
+      newPos = Math.max(0, Math.min(p.length, newPos));
+    } else {
+      newPos = Math.max(0, newPos);
+    }
+    updated.pos = newPos;
+    updated.lastPositionTime = Date.now();
+    this.storeMprisPlayer(updated);
+    this.notifyMprisChange();
+  }
+
+  /** Absolute position in milliseconds (Android sendSetPosition). */
+  public mprisSetPosition(positionMs: number): void {
+    const p = this.remoteMediaPlayer() ?? this.uiCommandPlayer();
+    if (!p || p.player.length === 0 || !this.isMprisSeekAllowed(p)) {
+      return;
+    }
+    const pos: number = Math.max(0, Math.round(positionMs));
+    const cmd: Record<string, Object> = { 'player': p.player, 'SetPosition': pos };
+    this.sendMprisCommand(cmd);
+    const updated = this.copyMprisPlayer(p);
+    updated.pos = pos;
+    updated.lastPositionTime = Date.now();
+    this.storeMprisPlayer(updated);
+    this.notifyMprisChange();
+  }
+
+  public mprisSetLoopStatus(loopStatus: string): void {
+    const p = this.mprisPlayer;
+    if (!p || p.player.length === 0 || !p.loopStatusAllowed) {
+      return;
+    }
+    const cmd: Record<string, Object> = { 'player': p.player, 'setLoopStatus': loopStatus };
+    this.sendMprisCommand(cmd);
+    const updated = this.copyMprisPlayer(p);
+    updated.loopStatus = loopStatus;
+    this.storeMprisPlayer(updated);
+    this.notifyMprisChange();
+  }
+
+  public mprisToggleLoop(): void {
+    const p = this.mprisPlayer;
+    if (!p) {
+      return;
+    }
+    let next: string = 'Track';
+    if (p.loopStatus === 'None' || p.loopStatus.length === 0) {
+      next = 'Track';
+    } else if (p.loopStatus === 'Track') {
+      next = 'Playlist';
+    } else {
+      next = 'None';
+    }
+    this.mprisSetLoopStatus(next);
+  }
+
+  public mprisSetShuffle(shuffle: boolean): void {
+    const p = this.mprisPlayer;
+    if (!p || p.player.length === 0 || !p.shuffleAllowed) {
+      return;
+    }
+    const cmd: Record<string, Object> = { 'player': p.player, 'setShuffle': shuffle };
+    this.sendMprisCommand(cmd);
+    const updated = this.copyMprisPlayer(p);
+    updated.shuffle = shuffle;
+    this.storeMprisPlayer(updated);
+    this.notifyMprisChange();
+  }
+
+  public mprisToggleShuffle(): void {
+    const p = this.mprisPlayer;
+    if (!p) {
+      return;
+    }
+    this.mprisSetShuffle(!p.shuffle);
+  }
+
+  /** Android isSeekAllowed */
+  public isMprisSeekAllowed(p: MprisPlayerState | null): boolean {
+    if (!p) {
+      return false;
+    }
+    return p.canSeek && p.length >= 0 && p.pos >= 0;
+  }
+
+  public isMprisSetVolumeAllowed(p: MprisPlayerState | null): boolean {
+    return p !== null && p.volume > -1;
+  }
+
+  // ── System volume (Android SystemVolumePlugin) ──
+
+  private notifySystemVolumeChange(): void {
+    if (this.onSystemVolumeChange) {
+      this.onSystemVolumeChange(this.systemVolumeSinks.slice());
+    }
+  }
+
+  private handleSystemVolumePacket(body: object): void {
+    const b = body as Record<string, Object>;
+    if (b['sinkList'] !== undefined && b['sinkList'] !== null) {
+      const raw = b['sinkList'];
+      const next: SystemVolumeSink[] = [];
+      if (Array.isArray(raw)) {
+        const arr = raw as Object[];
+        for (let i = 0; i < arr.length; i++) {
+          const item = arr[i] as Record<string, Object>;
+          if (!item || typeof item !== 'object') {
+            continue;
+          }
+          const name: string = typeof item['name'] === 'string' ? item['name'] as string : '';
+          if (name.length === 0) {
+            continue;
+          }
+          const description: string =
+            typeof item['description'] === 'string' ? item['description'] as string : name;
+          const volume: number = typeof item['volume'] === 'number' ? item['volume'] as number : 0;
+          const maxVolume: number =
+            typeof item['maxVolume'] === 'number' ? item['maxVolume'] as number : 100;
+          const muted: boolean = item['muted'] === true;
+          const enabled: boolean = item['enabled'] === true;
+          next.push({ name, description, volume, maxVolume, muted, enabled });
+        }
+      }
+      this.systemVolumeSinks = next;
+      console.info(`[KDE-MVP] SystemVolume sinkList count=${next.length}`);
+      this.notifySystemVolumeChange();
+      return;
+    }
+
+    // Incremental update: name + volume/muted/enabled
+    const name: string = typeof b['name'] === 'string' ? b['name'] as string : '';
+    if (name.length === 0) {
+      return;
+    }
+    const updated: SystemVolumeSink[] = [];
+    let found = false;
+    for (let i = 0; i < this.systemVolumeSinks.length; i++) {
+      const s = this.systemVolumeSinks[i];
+      if (s.name !== name) {
+        // If another sink becomes default, clear previous enabled
+        if (b['enabled'] === true) {
+          updated.push({
+            name: s.name,
+            description: s.description,
+            volume: s.volume,
+            maxVolume: s.maxVolume,
+            muted: s.muted,
+            enabled: false
+          });
+        } else {
+          updated.push(s);
+        }
+        continue;
+      }
+      found = true;
+      updated.push({
+        name: s.name,
+        description: s.description,
+        volume: typeof b['volume'] === 'number' ? b['volume'] as number : s.volume,
+        maxVolume: s.maxVolume,
+        muted: typeof b['muted'] === 'boolean' ? b['muted'] as boolean : s.muted,
+        enabled: typeof b['enabled'] === 'boolean' ? b['enabled'] as boolean : s.enabled
+      });
+    }
+    if (!found) {
+      return;
+    }
+    this.systemVolumeSinks = updated;
+    this.notifySystemVolumeChange();
+  }
+
+  private sendSystemVolumeRequest(cmd: Record<string, Object>): void {
+    if (!this.isPluginEnabled(PLUGIN_SYSTEMVOLUME)) {
+      return;
+    }
+    if (!this.isTlsLive()) {
+      return;
+    }
+    const json: string = serializePacket(PACKET_TYPE_SYSTEMVOLUME_REQUEST, cmd);
+    this.sendTls(json, () => {});
+  }
+
+  /** Desktop handles requestSinks → sendSinkList (Android relies on connected() push). */
+  public requestSystemVolumeSinks(): void {
+    this.sendSystemVolumeRequest({ 'requestSinks': true });
+  }
+
+  public setSystemVolume(name: string, volume: number): void {
+    if (name.length === 0) {
+      return;
+    }
+    const cmd: Record<string, Object> = { 'name': name, 'volume': Math.round(volume) };
+    this.sendSystemVolumeRequest(cmd);
+    // Optimistic local update
+    const next: SystemVolumeSink[] = [];
+    for (let i = 0; i < this.systemVolumeSinks.length; i++) {
+      const s = this.systemVolumeSinks[i];
+      if (s.name === name) {
+        next.push({
+          name: s.name,
+          description: s.description,
+          volume: Math.round(volume),
+          maxVolume: s.maxVolume,
+          muted: false, // desktop unmutes when volume is set
+          enabled: s.enabled
+        });
+      } else {
+        next.push(s);
+      }
+    }
+    this.systemVolumeSinks = next;
+    this.notifySystemVolumeChange();
+  }
+
+  public setSystemVolumeMute(name: string, muted: boolean): void {
+    if (name.length === 0) {
+      return;
+    }
+    const cmd: Record<string, Object> = { 'name': name, 'muted': muted };
+    this.sendSystemVolumeRequest(cmd);
+    const next: SystemVolumeSink[] = [];
+    for (let i = 0; i < this.systemVolumeSinks.length; i++) {
+      const s = this.systemVolumeSinks[i];
+      if (s.name === name) {
+        next.push({
+          name: s.name,
+          description: s.description,
+          volume: s.volume,
+          maxVolume: s.maxVolume,
+          muted: muted,
+          enabled: s.enabled
+        });
+      } else {
+        next.push(s);
+      }
+    }
+    this.systemVolumeSinks = next;
+    this.notifySystemVolumeChange();
+  }
+
+  public setSystemVolumeDefault(name: string): void {
+    if (name.length === 0) {
+      return;
+    }
+    const cmd: Record<string, Object> = { 'name': name, 'enabled': true };
+    this.sendSystemVolumeRequest(cmd);
+    const next: SystemVolumeSink[] = [];
+    for (let i = 0; i < this.systemVolumeSinks.length; i++) {
+      const s = this.systemVolumeSinks[i];
+      next.push({
+        name: s.name,
+        description: s.description,
+        volume: s.volume,
+        maxVolume: s.maxVolume,
+        muted: s.muted,
+        enabled: s.name === name
+      });
+    }
+    this.systemVolumeSinks = next;
+    this.notifySystemVolumeChange();
   }
 
   /** Handle incoming mpris.request (remote controls our media). */
@@ -798,16 +1652,6 @@ export class DeviceSession {
 
     // Update local state
     this.fallbackHandleAction(action);
-
-    // Sync AVSession state (so system notification widget shows correct status)
-    if (this.mprisSession) {
-      const state = this.localPlaying
-        ? avSession.PlaybackState.PLAYBACK_STATE_PLAY
-        : avSession.PlaybackState.PLAYBACK_STATE_PAUSE;
-      this.mprisSession.setAVPlaybackState({
-        state: state
-      }).catch(() => {});
-    }
 
     // Control the real foreground audio app (needs MANAGE_MEDIA_RESOURCES_FOR_PUBLIC)
     this.sendToActiveAudioSession(action);
@@ -867,85 +1711,32 @@ export class DeviceSession {
   /** Only one process-wide AVSession — multi-device must share it. */
   private static mprisOwner: DeviceSession | null = null;
 
-  /** Activate our AVSession so the system treats us as a media controller. */
+  /**
+   * Official RemoteMediaSessionManager flow:
+   * initSession (create+commands+activate) → startBackgroundTask(AUDIO_PLAYBACK)
+   * then MPRIS updates call updateRemoteMedia.
+   */
   public async setupMprisReceiver(ctx: common.UIAbilityContext): Promise<void> {
-    if (this.mprisSession) {
-      return;
-    }
-    // Second peer would hit error 6600101 if we create another AVSession
-    if (DeviceSession.mprisOwner !== null && DeviceSession.mprisOwner !== this) {
-      console.info('[KDE-MVP] setupMprisReceiver skipped — already owned by another session');
-      return;
-    }
+    this.context = ctx;
+    const media = RemoteMprisMediaSession.getInstance();
+    media.setContext(ctx);
+    DeviceSession.mprisOwner = this;
     try {
-      console.info('[KDE-MVP] AVSession creating…');
-      this.mprisSession = await avSession.createAVSession(ctx, 'HMConnectMpris', 'audio');
-      DeviceSession.mprisOwner = this;
-      console.info('[KDE-MVP] AVSession created, id:', this.mprisSession.sessionId);
-
-      // Register commands FIRST (docs: register before activate)
-      this.mprisSession.on('play', () => {
-        console.info('[KDE-MVP] AVSession ★ play');
-        this.localPlaying = true;
-        this.sendLocalMprisStatus();
-      });
-      this.mprisSession.on('pause', () => {
-        console.info('[KDE-MVP] AVSession ★ pause');
-        this.localPlaying = false;
-        this.sendLocalMprisStatus();
-      });
-      this.mprisSession.on('stop', () => {
-        console.info('[KDE-MVP] AVSession ★ stop');
-        this.localPlaying = false;
-        this.sendLocalMprisStatus();
-      });
-      this.mprisSession.on('playNext', () => {
-        console.info('[KDE-MVP] AVSession ★ playNext');
-        this.sendLocalMprisStatus();
-      });
-      this.mprisSession.on('playPrevious', () => {
-        console.info('[KDE-MVP] AVSession ★ playPrevious');
-        this.sendLocalMprisStatus();
-      });
-      console.info('[KDE-MVP] AVSession commands registered');
-
-      await this.mprisSession.setAVMetadata({
-        assetId: 'hmconnect',
-        title: 'HMConnect',
-        artist: 'KDE Connect'
-      });
-      console.info('[KDE-MVP] AVSession metadata set');
-
-      // Activate + get controller
-      await this.mprisSession.activate();
-      console.info('[KDE-MVP] AVSession activated, getting controller…');
-      this.mprisController = await this.mprisSession.getController();
-      console.info('[KDE-MVP] AVSession controller obtained');
-
-      await this.mprisSession.setAVPlaybackState({
-        state: avSession.PlaybackState.PLAYBACK_STATE_STOP
-      });
-      console.info('[KDE-MVP] AVSession initial state set to STOP');
-      console.info('[KDE-MVP] MPRIS receiver AVSession activated');
+      // 官方：先激活 AVSession，再申请 AUDIO_PLAYBACK 长时任务（init 内已做）
+      await media.initSession();
+      console.info('[KDE-MVP] RemoteMediaSession init+bgTask OK (锁屏/播控)');
     } catch (e) {
-      console.warn('[KDE-MVP] setupMprisReceiver failed:', JSON.stringify(e));
-      this.mprisSession = null;
-      if (DeviceSession.mprisOwner === this) {
-        DeviceSession.mprisOwner = null;
-      }
+      console.warn('[KDE-MVP] RemoteMediaSession init failed:', JSON.stringify(e));
     }
+    this.syncRemoteMediaSession();
   }
 
   public teardownMprisReceiver(): void {
     this.mprisController = null;
-    const s = this.mprisSession;
     this.mprisSession = null;
+    RemoteMprisMediaSession.getInstance().clearIfTarget(this);
     if (DeviceSession.mprisOwner === this) {
       DeviceSession.mprisOwner = null;
-    }
-    if (s) {
-      try { s.deactivate(); } catch (_e) {}
-      try { s.destroy(); } catch (_e) {}
     }
   }
 
@@ -1687,7 +2478,10 @@ export class DeviceSession {
       console.error('[KDE-MVP] TLS error:', JSON.stringify(err));
       if (gen === this.sessionGen) {
         this.handlingIncoming = false;
-        if (!this.paired && !this.sessionLive) {
+        // Live session write/read failure (e.g. 2303506 after concurrent send)
+        if (this.sessionLive || this.paired) {
+          this.onTlsSendFailed(err as Object);
+        } else {
           this.emit('error', '加密协商失败，请重试连接');
         }
       }
@@ -1802,6 +2596,8 @@ export class DeviceSession {
             peerDeviceId: this.peerDevice?.deviceId
           });
           this.requestPeerNotifications();
+          this.requestMprisPlayerList();
+          this.requestSystemVolumeSinks();
         } else if (this.pairRequestedByPeer) {
           // Android: ignore second pairing request before timeout
           console.warn('[KDE-MVP] Ignoring second pairing request before timeout');
@@ -1892,12 +2688,17 @@ export class DeviceSession {
     }
 
     if (type === PACKET_TYPE_MPRIS) {
-      this.handleMprisPacket(body);
+      this.handleMprisPacket(body, packet);
       return;
     }
 
     if (type === PACKET_TYPE_MPRIS_REQUEST) {
       this.handleMprisRequest(body);
+      return;
+    }
+
+    if (type === PACKET_TYPE_SYSTEMVOLUME) {
+      this.handleSystemVolumePacket(body);
       return;
     }
 
@@ -2465,6 +3266,8 @@ export class DeviceSession {
       peerDeviceId: this.peerDevice?.deviceId
     });
     this.requestPeerNotifications();
+    this.requestMprisPlayerList();
+    this.requestSystemVolumeSinks();
   }
 
   /** Reject incoming pair request (from notification action). */
@@ -2536,6 +3339,12 @@ export class DeviceSession {
     this.pendingPairAccept = false;
     this.lineBuffer = '';
     this.peerBattery = null;
+    this.mprisPlayer = null;
+    this.mprisPlayers.clear();
+    this.mprisUserSelected = false;
+    this.remoteMediaPlayerName = '';
+    this.supportAlbumArtPayload = false;
+    this.systemVolumeSinks = [];
     this.clearVerificationState();
     this.stopBatteryReporting();
     this.teardownMprisReceiver();
@@ -2649,25 +3458,134 @@ export class DeviceSession {
 
   // ── TLS channel abstraction (works for both reverse + outbound) ──
 
-  private isTlsLive(): boolean {
+  public isTlsLive(): boolean {
+    if (this.tlsSendDead) {
+      return false;
+    }
     if (this.outboundActive && this.outTlsConn !== null) {
       return true;
     }
-    return this.tlsSocket !== null;
+    return this.tlsSocket !== null && this.sessionLive;
   }
 
-  /** Send a JSON string over whichever TLS channel is active. */
-  private sendTls(data: string, callback?: (err: Object) => void): void {
-    const cb: (err: Object) => void = callback ?? ((_e: Object) => {});
-    if (this.outboundActive && this.outTlsConn) {
-      this.outTlsConn.send(data, cb);
-    } else if (this.tlsSocket) {
-      this.tlsSocket.send(data, cb);
+  /**
+   * Queue a JSON line on the active TLS channel.
+   * Serializes writes — parallel send() on HarmonyOS TLS often fails with
+   * PollSend errno=6 / errorNumber=2303506 and kills the link mid-command (e.g. next track).
+   */
+  private sendTls(data: string, callback?: (err: Error | null) => void): void {
+    if (this.tlsSendDead || !this.isTlsLive()) {
+      if (callback) {
+        callback(new Error('TLS not live'));
+      }
+      return;
+    }
+    this.tlsSendQueue.push(data);
+    // Only keep the latest callback for simplicity (MPRIS fire-and-forget OK)
+    this.pumpTlsSendQueue(callback);
+  }
+
+  private pumpTlsSendQueue(callback?: (err: Error | null) => void): void {
+    if (this.tlsSendBusy) {
+      return;
+    }
+    if (this.tlsSendQueue.length === 0) {
+      return;
+    }
+    const chunk: string = this.tlsSendQueue.shift() as string;
+    this.tlsSendBusy = true;
+
+    const onDone = (err: Error | Object | null | undefined): void => {
+      this.tlsSendBusy = false;
+      // OHOS may pass null/undefined on success
+      let failErr: Error | null = null;
+      if (err !== null && err !== undefined) {
+        if (err instanceof Error) {
+          failErr = err;
+        } else if (typeof err === 'object') {
+          const rec = err as Record<string, Object>;
+          if (rec['errorNumber'] !== undefined || rec['code'] !== undefined ||
+            rec['message'] !== undefined || rec['errorString'] !== undefined) {
+            failErr = new Error(JSON.stringify(err));
+          }
+        } else {
+          failErr = new Error(String(err));
+        }
+      }
+      if (failErr !== null) {
+        console.error('[KDE-MVP] TLS send failed:', failErr.message);
+        this.onTlsSendFailed(failErr);
+        if (callback) {
+          callback(failErr);
+        }
+        this.tlsSendQueue = [];
+        return;
+      }
+      if (callback && this.tlsSendQueue.length === 0) {
+        callback(null);
+      }
+      this.pumpTlsSendQueue(undefined);
+    };
+
+    try {
+      if (this.outboundActive && this.outTlsConn) {
+        this.outTlsConn.send(chunk, (e: Object) => {
+          onDone(e);
+        });
+      } else if (this.tlsSocket) {
+        this.tlsSocket.send(chunk, (e: Object) => {
+          onDone(e);
+        });
+      } else {
+        onDone(new Error('no TLS socket'));
+      }
+    } catch (e) {
+      onDone(e instanceof Error ? e : new Error(JSON.stringify(e)));
+    }
+  }
+
+  /** Mark link dead and try reverse/outbound recovery for trusted peers. */
+  private onTlsSendFailed(_err: Object): void {
+    if (this.tlsSendDead) {
+      return;
+    }
+    this.tlsSendDead = true;
+    this.sessionLive = false;
+    this.notifySessionChange();
+    console.warn('[KDE-MVP] TLS channel dead after send error — recovering');
+
+    const peer = this.peerDevice;
+    const wasPaired = this.paired || (peer !== null && this.isTrusted(peer.deviceId));
+    // Soft teardown sockets but keep trust
+    this.closeTlsChannel();
+    this.cleanOutboundState();
+
+    if (wasPaired && peer !== null && peer.ip.length > 0) {
+      // Re-dial peer (PC may still reverse-connect via identity; outbound is backup)
+      const delayMs = 800;
+      const gen = this.sessionGen;
+      setTimeout(() => {
+        if (gen !== this.sessionGen) {
+          return;
+        }
+        // Already recovered via reverse connect
+        if (this.sessionLive && !this.tlsSendDead) {
+          return;
+        }
+        this.tlsSendDead = false;
+        console.info('[KDE-MVP] Reconnect after TLS send failure →', peer.deviceName);
+        this.connectToDevice(peer);
+      }, delayMs);
+    } else {
+      this.tlsSendDead = false;
     }
   }
 
   /** Close & null out whichever TLS channel + its bridges are live. */
   private closeTlsChannel(): void {
+    this.tlsSendQueue = [];
+    this.tlsSendBusy = false;
+    // tlsSendDead left as-is if recovering; reset when new TLS comes up
     if (this.outboundActive) {
       try { this.outTlsConn?.close(); } catch (_e) {}
       this.outTlsConn = null;
@@ -2699,9 +3617,9 @@ export class DeviceSession {
       console.warn('[KDE-MVP] sendJson: not connected');
       return;
     }
-    this.sendTls(json, (err: Object) => {
+    this.sendTls(json, (err: Error | null) => {
       if (err) {
-        console.error('[KDE-MVP] sendJson failed:', JSON.stringify(err));
+        console.error('[KDE-MVP] sendJson failed:', err.message);
       }
     });
   }
@@ -2783,9 +3701,9 @@ export class DeviceSession {
     );
 
     await new Promise<void>((resolve: (value: void) => void, reject: (reason: Error) => void) => {
-      this.sendTls(json, (err: Object) => {
+      this.sendTls(json, (err: Error | null) => {
         if (err) {
-          reject(new Error('Main-channel send failed'));
+          reject(new Error(`Main-channel send failed: ${err.message}`));
         } else {
           resolve();
         }
@@ -2812,43 +3730,57 @@ export class DeviceSession {
       });
 
     // 5. Stream file bytes
+    let opened: fileIo.File | null = null;
     try {
-      const file: fileIo.File = fileIo.openSync(filePath, fileIo.OpenMode.READ_ONLY);
+      let file: fileIo.File;
+      try {
+        file = fileIo.openSync(filePath, fileIo.OpenMode.READ_ONLY);
+      } catch (openErr) {
+        console.error('[KDE-MVP] open file for send failed:', JSON.stringify(openErr));
+        // arkts-limited-throw: only Error / subclasses
+        throw new Error(`open file for send failed: ${JSON.stringify(openErr)}`);
+      }
+      opened = file;
       const buf: ArrayBuffer = new ArrayBuffer(4096);
       let totalSent: number = 0;
       let lastProgressTime: number = Date.now();
 
-      try {
-        let bytesRead: number;
-        let chunk: ArrayBuffer;
-        while ((bytesRead = fileIo.readSync(file.fd, buf)) > 0) {
-          chunk = new ArrayBuffer(bytesRead);
-          const src: Uint8Array = new Uint8Array(buf, 0, bytesRead);
-          const dst: Uint8Array = new Uint8Array(chunk);
-          dst.set(src);
+      let bytesRead: number = 0;
+      let chunk: ArrayBuffer;
+      while (true) {
+        try {
+          bytesRead = fileIo.readSync(file.fd, buf);
+        } catch (readErr) {
+          console.error('[KDE-MVP] read file chunk failed:', JSON.stringify(readErr));
+          throw new Error(`read file chunk failed: ${JSON.stringify(readErr)}`);
+        }
+        if (bytesRead <= 0) {
+          break;
+        }
+        chunk = new ArrayBuffer(bytesRead);
+        const src: Uint8Array = new Uint8Array(buf, 0, bytesRead);
+        const dst: Uint8Array = new Uint8Array(chunk);
+        dst.set(src);
 
-          await new Promise<void>((res: () => void, rej: (e: Object) => void) => {
-            connected.send(chunk, (err: Object) => {
-              if (err) {
-                rej(err);
-              } else {
-                res();
-              }
-            });
-          });
-
-          totalSent += bytesRead;
-          if (onProgress && fileSize > 0) {
-            const now: number = Date.now();
-            if (now - lastProgressTime >= 500) {
-              lastProgressTime = now;
-              const percent: number = Math.round((totalSent * 100) / fileSize);
-              onProgress(percent);
+        await new Promise<void>((res: () => void, rej: (e: Object) => void) => {
+          connected.send(chunk, (err: Object) => {
+            if (err) {
+              rej(err);
+            } else {
+              res();
             }
+          });
+        });
+
+        totalSent += bytesRead;
+        if (onProgress && fileSize > 0) {
+          const now: number = Date.now();
+          if (now - lastProgressTime >= 500) {
+            lastProgressTime = now;
+            const percent: number = Math.round((totalSent * 100) / fileSize);
+            onProgress(percent);
           }
         }
-      } finally {
-        fileIo.closeSync(file);
       }
 
       if (onProgress) {
@@ -2857,6 +3789,13 @@ export class DeviceSession {
 
       console.info('[KDE-MVP] File sent: ' + body.filename + ' (' + totalSent + ' bytes)');
     } finally {
+      if (opened !== null) {
+        try {
+          fileIo.closeSync(opened);
+        } catch (closeErr) {
+          console.warn('[KDE-MVP] close send file failed:', JSON.stringify(closeErr));
+        }
+      }
       this.cleanupPayload();
     }
   }

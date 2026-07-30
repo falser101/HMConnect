@@ -8,6 +8,8 @@ import { KdeIcon, KdeIconRes } from './KdeIcons';
 
 @Component
 export struct KdeTopBar {
+  /** Status-bar inset (vp) from ImmersiveUtil — pads toolbar under transparent system bar. */
+  @StorageProp('statusBarHeight') statusBarHeight: number = 0;
   @Prop title: ResourceStr = '';
   @Prop subtitle: ResourceStr = '';
   @Prop showBack: boolean = false;
@@ -32,93 +34,97 @@ export struct KdeTopBar {
   }
 
   build() {
-    Row() {
-      if (this.showMenu) {
-        Column() {
-          KdeIcon({ symbol: KdeIconRes.menu(), iconSize: 24, color: UiTheme.iconOnSurface })
+    // One continuous surface: status-bar region + toolbar (no separate spacer strip).
+    Column() {
+      Row() {
+        if (this.showMenu) {
+          Column() {
+            KdeIcon({ symbol: KdeIconRes.menu(), iconSize: 24, color: UiTheme.iconOnSurface })
+          }
+          .width(48)
+          .height(48)
+          .justifyContent(FlexAlign.Center)
+          .borderRadius(24)
+          .onClick(() => {
+            this.onMenu();
+          })
         }
-        .width(48)
-        .height(48)
-        .justifyContent(FlexAlign.Center)
-        .borderRadius(24)
-        .onClick(() => {
-          this.onMenu();
-        })
-      }
 
-      if (this.showBack) {
-        Column() {
-          KdeIcon({ symbol: KdeIconRes.arrowBack(), iconSize: 24, color: UiTheme.onSurface })
+        if (this.showBack) {
+          Column() {
+            KdeIcon({ symbol: KdeIconRes.arrowBack(), iconSize: 24, color: UiTheme.onSurface })
+          }
+          .width(48)
+          .height(48)
+          .justifyContent(FlexAlign.Center)
+          .borderRadius(24)
+          .onClick(() => {
+            this.onBack();
+          })
         }
-        .width(48)
-        .height(48)
-        .justifyContent(FlexAlign.Center)
-        .borderRadius(24)
-        .onClick(() => {
-          this.onBack();
-        })
-      }
 
-      Column() {
-        Text(this.title)
-          .fontSize(this.subtitleNotEmpty() ? 18 : 20)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(UiTheme.onSurface)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .width('100%')
-        if (this.subtitleNotEmpty()) {
-          Text(this.subtitle)
-            .fontSize(13)
-            .fontColor(UiTheme.onSurfaceVariant)
+        Column() {
+          Text(this.title)
+            .fontSize(this.subtitleNotEmpty() ? 18 : 20)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(UiTheme.onSurface)
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
-            .margin({ top: 2 })
             .width('100%')
+          if (this.subtitleNotEmpty()) {
+            Text(this.subtitle)
+              .fontSize(13)
+              .fontColor(UiTheme.onSurfaceVariant)
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .margin({ top: 2 })
+              .width('100%')
+          }
         }
-      }
-      .alignItems(HorizontalAlign.Start)
-      .layoutWeight(1)
-      .margin({ left: 4, right: 4 })
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
+        .margin({ left: 4, right: 4 })
 
-      if (this.showRefresh) {
-        Column() {
-          KdeIcon({ symbol: KdeIconRes.refresh(), iconSize: 24, color: UiTheme.iconTint })
+        if (this.showRefresh) {
+          Column() {
+            KdeIcon({ symbol: KdeIconRes.refresh(), iconSize: 24, color: UiTheme.iconTint })
+          }
+          .width(48)
+          .height(48)
+          .justifyContent(FlexAlign.Center)
+          .borderRadius(24)
+          .rotate({ angle: this.refreshing ? 360 : 0 })
+          .animation({
+            duration: this.refreshing ? 900 : 0,
+            iterations: this.refreshing ? -1 : 1,
+            curve: Curve.Linear
+          })
+          .onClick(() => {
+            this.onRefresh();
+          })
         }
-        .width(48)
-        .height(48)
-        .justifyContent(FlexAlign.Center)
-        .borderRadius(24)
-        .rotate({ angle: this.refreshing ? 360 : 0 })
-        .animation({
-          duration: this.refreshing ? 900 : 0,
-          iterations: this.refreshing ? -1 : 1,
-          curve: Curve.Linear
-        })
-        .onClick(() => {
-          this.onRefresh();
-        })
-      }
 
-      if (this.showOverflow) {
-        Column() {
-          KdeIcon({ symbol: KdeIconRes.moreVert(), iconSize: 24, color: UiTheme.iconTint })
+        if (this.showOverflow) {
+          Column() {
+            KdeIcon({ symbol: KdeIconRes.moreVert(), iconSize: 24, color: UiTheme.iconTint })
+          }
+          .width(48)
+          .height(48)
+          .justifyContent(FlexAlign.Center)
+          .borderRadius(24)
+          .onClick(() => {
+            this.onOverflow();
+          })
         }
-        .width(48)
-        .height(48)
-        .justifyContent(FlexAlign.Center)
-        .borderRadius(24)
-        .onClick(() => {
-          this.onOverflow();
-        })
       }
+      .width('100%')
+      .height(UiTheme.toolbarH)
+      .padding({ left: 4, right: 4 })
+      .alignItems(VerticalAlign.Center)
     }
     .width('100%')
-    .height(UiTheme.toolbarH)
-    .padding({ left: 4, right: 4 })
-    .alignItems(VerticalAlign.Center)
+    .padding({ top: this.statusBarHeight })
     .backgroundColor(UiTheme.surface)
-    // Draw into status-bar region so chrome is continuous with system bars.
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP])
   }
 }

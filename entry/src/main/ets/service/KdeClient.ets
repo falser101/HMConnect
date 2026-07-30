@@ -9,6 +9,7 @@ import {
   KdeStatus,
   ConnectionState,
   MprisPlayerState,
+  SystemVolumeSink,
   sanitizeDeviceName
 } from './KdeTypes';
 import { DeviceStore } from '../store/DeviceStore';
@@ -47,6 +48,10 @@ export class KdeClient {
   private onSessionChange?: (live: boolean, paired: boolean) => void;
   /** deviceId → mpris listener (UI page for that device). */
   private mprisListeners: Map<string, (player: MprisPlayerState | null) => void> = new Map();
+  /** deviceId → mpris player-list listener. */
+  private mprisListListeners: Map<string, (names: string[]) => void> = new Map();
+  /** deviceId → system volume listener. */
+  private systemVolumeListeners: Map<string, (sinks: SystemVolumeSink[]) => void> = new Map();
 
   public setContext(ctx: common.UIAbilityContext): void {
     this.context = ctx;
@@ -189,6 +194,14 @@ export class KdeClient {
       if (mprisCb) {
         session.setMprisChangeListener(mprisCb);
       }
+      let listCb = this.mprisListListeners.get(knownDeviceId);
+      if (listCb) {
+        session.setMprisPlayerListListener(listCb);
+      }
+      let volCb = this.systemVolumeListeners.get(knownDeviceId);
+      if (volCb) {
+        session.setSystemVolumeChangeListener(volCb);
+      }
     }
   }
 
@@ -257,6 +270,14 @@ export class KdeClient {
     let mprisCb = this.mprisListeners.get(realId);
     if (mprisCb) {
       session.setMprisChangeListener(mprisCb);
+    }
+    let listCb = this.mprisListListeners.get(realId);
+    if (listCb) {
+      session.setMprisPlayerListListener(listCb);
+    }
+    let volCb = this.systemVolumeListeners.get(realId);
+    if (volCb) {
+      session.setSystemVolumeChangeListener(volCb);
     }
     console.info(`[KDE-MVP] Session bound: ${realId} (total=${this.sessions.size})`);
   }
@@ -490,8 +511,28 @@ export class KdeClient {
     this.sessions.get(deviceId)?.setMprisChangeListener(cb);
   }
 
+  public setMprisPlayerListListenerForDevice(
+    deviceId: string,
+    cb: (names: string[]) => void
+  ): void {
+    this.mprisListListeners.set(deviceId, cb);
+    this.sessions.get(deviceId)?.setMprisPlayerListListener(cb);
+  }
+
+  public getMprisPlayerListForDevice(deviceId: string): string[] {
+    return this.sessions.get(deviceId)?.getMprisPlayerList() ?? [];
+  }
+
+  public selectMprisPlayerForDevice(deviceId: string, name: string): void {
+    this.sessions.get(deviceId)?.selectMprisPlayer(name);
+  }
+
   public mprisPlayPause(): void {
     this.getClient()?.mprisPlayPause();
+  }
+
+  public mprisStop(): void {
+    this.getClient()?.mprisStop();
   }
 
   public mprisPrevious(): void {
@@ -506,8 +547,96 @@ export class KdeClient {
     this.getClient()?.mprisSetVolume(vol);
   }
 
-  public mprisSeek(offset: number): void {
-    this.getClient()?.mprisSeek(offset);
+  public mprisVolumeStep(stepPercent: number): void {
+    this.getClient()?.mprisVolumeStep(stepPercent);
+  }
+
+  public mprisSeek(offsetUs: number): void {
+    this.getClient()?.mprisSeek(offsetUs);
+  }
+
+  public mprisSetPosition(positionMs: number): void {
+    this.getClient()?.mprisSetPosition(positionMs);
+  }
+
+  public mprisToggleLoop(): void {
+    this.getClient()?.mprisToggleLoop();
+  }
+
+  public mprisToggleShuffle(): void {
+    this.getClient()?.mprisToggleShuffle();
+  }
+
+  public requestMprisPlayerListForDevice(deviceId: string): void {
+    this.sessions.get(deviceId)?.requestMprisPlayerList();
+  }
+
+  public mprisStopForDevice(deviceId: string): void {
+    this.sessions.get(deviceId)?.mprisStop();
+  }
+
+  public mprisSeekForDevice(deviceId: string, offsetUs: number): void {
+    this.sessions.get(deviceId)?.mprisSeek(offsetUs);
+  }
+
+  public mprisSetPositionForDevice(deviceId: string, positionMs: number): void {
+    this.sessions.get(deviceId)?.mprisSetPosition(positionMs);
+  }
+
+  public mprisToggleLoopForDevice(deviceId: string): void {
+    this.sessions.get(deviceId)?.mprisToggleLoop();
+  }
+
+  public mprisToggleShuffleForDevice(deviceId: string): void {
+    this.sessions.get(deviceId)?.mprisToggleShuffle();
+  }
+
+  public mprisVolumeStepForDevice(deviceId: string, stepPercent: number): void {
+    this.sessions.get(deviceId)?.mprisVolumeStep(stepPercent);
+  }
+
+  public mprisPlayPauseForDevice(deviceId: string): void {
+    this.sessions.get(deviceId)?.mprisPlayPause();
+  }
+
+  public mprisPreviousForDevice(deviceId: string): void {
+    this.sessions.get(deviceId)?.mprisPrevious();
+  }
+
+  public mprisNextForDevice(deviceId: string): void {
+    this.sessions.get(deviceId)?.mprisNext();
+  }
+
+  public mprisSetVolumeForDevice(deviceId: string, vol: number): void {
+    this.sessions.get(deviceId)?.mprisSetVolume(vol);
+  }
+
+  public setSystemVolumeChangeListenerForDevice(
+    deviceId: string,
+    cb: (sinks: SystemVolumeSink[]) => void
+  ): void {
+    this.systemVolumeListeners.set(deviceId, cb);
+    this.sessions.get(deviceId)?.setSystemVolumeChangeListener(cb);
+  }
+
+  public getSystemVolumeSinksForDevice(deviceId: string): SystemVolumeSink[] {
+    return this.sessions.get(deviceId)?.getSystemVolumeSinks() ?? [];
+  }
+
+  public requestSystemVolumeSinksForDevice(deviceId: string): void {
+    this.sessions.get(deviceId)?.requestSystemVolumeSinks();
+  }
+
+  public setSystemVolumeForDevice(deviceId: string, name: string, volume: number): void {
+    this.sessions.get(deviceId)?.setSystemVolume(name, volume);
+  }
+
+  public setSystemVolumeMuteForDevice(deviceId: string, name: string, muted: boolean): void {
+    this.sessions.get(deviceId)?.setSystemVolumeMute(name, muted);
+  }
+
+  public setSystemVolumeDefaultForDevice(deviceId: string, name: string): void {
+    this.sessions.get(deviceId)?.setSystemVolumeDefault(name);
   }
 
   public async setupMprisReceiver(ctx: common.UIAbilityContext): Promise<void> {

@@ -245,7 +245,7 @@ struct Index {
         .constraintSize({ minWidth: 0 })
       }
       .width('100%')
-      .padding({ left: 16, right: 16, top: 48, bottom: 16 })
+      .padding({ left: 16, right: 16, top: this.statusBarHeight + 16, bottom: 16 })
       .alignItems(VerticalAlign.Center)
 
       Divider().color(UiTheme.divider)
@@ -318,12 +318,7 @@ struct Index {
   build() {
     Stack() {
       Column() {
-        // Status-bar spacer — same color as toolbar so chrome is continuous
-        Column()
-          .width('100%')
-          .height(this.statusBarHeight)
-          .backgroundColor(UiTheme.surface)
-
+        // TopBar paints under transparent status bar (continuous chrome)
         KdeTopBar({
           title: '设备',
           showMenu: true,

@@ -35,7 +35,7 @@ interface SettingEntry {
 @Entry
 @Component
 struct Settings {
-  @StorageProp('statusBarHeight') statusBarHeight: number = 0;
+
   @StorageProp('navBarHeight') navBarHeight: number = 0;
   @State myName: string = '';
   @State confirmClear: boolean = false;
@@ -200,11 +200,6 @@ struct Settings {
   build() {
     Stack() {
       Column() {
-        Column()
-          .width('100%')
-          .height(this.statusBarHeight)
-          .backgroundColor(UiTheme.surface)
-
         KdeTopBar({
           title: 'Settings',
           showBack: true,

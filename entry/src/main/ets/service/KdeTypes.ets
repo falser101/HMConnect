@@ -25,6 +25,10 @@ export const MY_DEVICE_ID: string = 'a1b2c3d4e5f6789012345678abcdef01';
 export const PACKET_TYPE_MPRIS: string = 'kdeconnect.mpris';
 export const PACKET_TYPE_MPRIS_REQUEST: string = 'kdeconnect.mpris.request';
 
+/** System volume control of remote sinks (Android SystemVolumePlugin). */
+export const PACKET_TYPE_SYSTEMVOLUME: string = 'kdeconnect.systemvolume';
+export const PACKET_TYPE_SYSTEMVOLUME_REQUEST: string = 'kdeconnect.systemvolume.request';
+
 /** Receive notifications from peer (Android ReceiveNotificationsPlugin). */
 export const PACKET_TYPE_NOTIFICATION: string = 'kdeconnect.notification';
 export const PACKET_TYPE_NOTIFICATION_REQUEST: string = 'kdeconnect.notification.request';
@@ -40,6 +44,8 @@ export const INCOMING_CAPABILITIES: string[] = [
   'kdeconnect.share.request',
   'kdeconnect.mpris',
   'kdeconnect.mpris.request',
+  // Control peer system volume (receive sink list / updates)
+  PACKET_TYPE_SYSTEMVOLUME,
   // Receive peer notifications (stage A — send side not yet implemented)
   PACKET_TYPE_NOTIFICATION
 ];
@@ -54,6 +60,8 @@ export const OUTGOING_CAPABILITIES: string[] = [
   'kdeconnect.share.request',
   'kdeconnect.mpris',
   'kdeconnect.mpris.request',
+  // Adjust peer system volume / mute / default sink
+  PACKET_TYPE_SYSTEMVOLUME_REQUEST,
   PACKET_TYPE_NOTIFICATION_REQUEST
 ];
 
@@ -321,7 +329,10 @@ export function sanitizeDeviceName(name: string): string {
   return cleaned;
 }
 
-/** MPRIS player state (mirrors Android MprisPlugin.MprisPlayer). */
+/**
+ * MPRIS player state (mirrors Android MprisPlugin.MprisPlayer).
+ * length/pos: milliseconds. Seek command uses microseconds.
+ */
 export interface MprisPlayerState {
   player: string;
   title: string;
@@ -333,10 +344,34 @@ export interface MprisPlayerState {
   canGoNext: boolean;
   canGoPrevious: boolean;
   canSeek: boolean;
+  /** Player volume 0–100; -1 means setVolume not allowed (Android isSetVolumeAllowed). */
   volume: number;
   length: number;  // ms
   pos: number;     // ms
   lastPositionTime: number;
+  /** "None" | "Track" | "Playlist" (empty until peer reports). */
   loopStatus: string;
+  /** True once peer has sent loopStatus at least once. */
+  loopStatusAllowed: boolean;
   shuffle: boolean;
+  /** True once peer has sent shuffle at least once. */
+  shuffleAllowed: boolean;
+  /** Remote album art URL (http/https/file/kdeconnect). */
+  albumArtUrl: string;
+  /** Local file path after payload transfer (optional). */
+  albumArtLocalPath: string;
+}
+
+/** Default Seek offset: 10s in microseconds (Android mpris_time_default). */
+export const MPRIS_DEFAULT_SEEK_US: number = 10000000;
+
+/** Remote audio sink (mirrors Android systemvolume.Sink). */
+export interface SystemVolumeSink {
+  name: string;
+  description: string;
+  volume: number;
+  maxVolume: number;
+  muted: boolean;
+  /** true = default/enabled output (Pulse/Windows "enabled"). */
+  enabled: boolean;
 }

@@ -1,12 +1,16 @@
+/**
+ * Legacy find-phone helper — prefer KdeBackgroundService for keep-alive.
+ * Static import only: dynamic import('@kit.BackgroundTasksKit') fails on device.
+ */
 import { common, WantAgent } from '@kit.AbilityKit';
+import { backgroundTaskManager } from '@kit.BackgroundTasksKit';
 
 /** SysCap guard — same string used in canIUse checks. */
 const SYSCAP = 'SystemCapability.ResourceSchedule.BackgroundTaskManager.ContinuousTask';
 
 /**
- * Start a continuous background task (audio playback) for find-my-phone alarm.
- * Uses dynamic import instead of static import — this silences the ArkTS SysCap
- * warnings because the compiler cannot statically trace the module reference.
+ * Start a continuous background task (audio playback).
+ * Note: only one continuous task per Ability — prefer KdeBackgroundService dataTransfer.
  */
 export async function startContinuousTask(
   ctx: common.UIAbilityContext,
@@ -16,22 +20,18 @@ export async function startContinuousTask(
   if (!canIUse(SYSCAP)) {
     return false;
   }
-  // Dynamic import: no static reference → no SysCap warning
-  const mod = await import('@kit.BackgroundTasksKit');
   try {
-    // String[] overload
-    mod.backgroundTaskManager.startBackgroundRunning(ctx, ['audioPlayback'], agent);
+    await backgroundTaskManager.startBackgroundRunning(ctx, ['audioPlayback'], agent);
     return true;
-  } catch (err) {
+  } catch (_err) {
     try {
-      // Enum overload fallback
-      mod.backgroundTaskManager.startBackgroundRunning(
+      await backgroundTaskManager.startBackgroundRunning(
         ctx,
-        mod.backgroundTaskManager.BackgroundMode.AUDIO_PLAYBACK,
+        backgroundTaskManager.BackgroundMode.AUDIO_PLAYBACK,
         agent2
       );
       return true;
-    } catch (err2) {
+    } catch (_err2) {
       return false;
     }
   }
@@ -39,14 +39,14 @@ export async function startContinuousTask(
 
 /**
  * Stop a previously started continuous background task.
+ * WARNING: stops the Ability's only continuous task (including dataTransfer).
  */
 export async function stopContinuousTask(ctx: common.UIAbilityContext): Promise<void> {
   if (!canIUse(SYSCAP)) {
     return;
   }
-  const mod = await import('@kit.BackgroundTasksKit');
   try {
-    mod.backgroundTaskManager.stopBackgroundRunning(ctx);
+    backgroundTaskManager.stopBackgroundRunning(ctx);
   } catch (_err) {
     // Best-effort: task may already be stopped
   }

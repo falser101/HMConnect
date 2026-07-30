@@ -1,9 +1,9 @@
 import { common } from '@kit.AbilityKit';
 import { UIContext, router } from '@kit.ArkUI';
-import pasteboard from '@ohos.pasteboard';
 import { KdeService } from '../service/KdeService';
 import { DeviceListItem, KdeStatus } from '../service/KdeTypes';
 import { FindMyPhoneHelper } from '../common/FindMyPhoneHelper';
+import { RemoteMprisMediaSession } from '../service/RemoteMprisMediaSession';
 
 /**
  * Process-wide session: protocol stack lives here, not in pages.
@@ -43,6 +43,12 @@ export class AppSession {
   public async ensureStarted(context: common.UIAbilityContext): Promise<void> {
     this.context = context;
     FindMyPhoneHelper.getInstance().setContext(context);
+    // Early AVSession for lock-screen / 播控中心 (pure remote; no local audio)
+    const media = RemoteMprisMediaSession.getInstance();
+    media.setContext(context);
+    media.initSession().catch((e: Error) => {
+      console.warn('[AppSession] RemoteMpris initSession:', e.message);
+    });
     if (this.started) {
       return;
     }
@@ -112,35 +118,24 @@ export class AppSession {
   }
 
   /**
-   * Directly read clipboard and send to target device.
-   * Mirrors Android ClipboardFloatingActivity (invisible, no UI, send-and-done).
+   * Open device detail and show PasteButton overlay (temporary clipboard access).
+   * Ordinary apps cannot install with ohos.permission.READ_PASTEBOARD (code 9568289);
+   * system PasteButton is the supported path.
    */
   public openClipboardSendFor(deviceId: string): void {
+    if (!this.uiContext) {
+      console.warn('[AppSession] openClipboardSendFor: no uiContext');
+      return;
+    }
     try {
-      const sysPasteboard = pasteboard.getSystemPasteboard();
-      sysPasteboard.getData((err: Error, data: pasteboard.PasteData) => {
-        if (err) {
-          console.error('[AppSession] clipboard read error:', err.message);
-          return;
-        }
-        if (!data) {
-          console.warn('[AppSession] clipboard empty');
-          return;
-        }
-        const text = data.getPrimaryText();
-        if (!text || text.trim().length === 0) {
-          console.warn('[AppSession] clipboard has no text');
-          return;
-        }
-        if (deviceId && deviceId.length > 0) {
-          this.service.sendClipboardTextTo(deviceId, text.trim());
-        } else {
-          this.service.sendClipboardText(text.trim());
-        }
-        console.info('[AppSession] clipboard sent to', deviceId);
+      this.uiContext.getRouter().pushUrl({
+        url: 'pages/DeviceDetail',
+        params: { deviceId: deviceId, action: 'sendClipboard' }
+      }).catch((e: Error) => {
+        console.error('[AppSession] openClipboardSendFor pushUrl failed:', e.message);
       });
     } catch (e) {
-      console.error('[AppSession] openClipboardSendFor failed:', JSON.stringify(e));
+      console.error('[AppSession] openClipboardSendFor exception:', JSON.stringify(e));
     }
   }
 
@@ -164,11 +159,18 @@ export class AppSession {
 
   /** Navigate to device detail and trigger file picker. */
   public openFileSendFor(deviceId: string): void {
-    if (this.uiContext) {
+    if (!this.uiContext) {
+      return;
+    }
+    try {
       this.uiContext.getRouter().pushUrl({
         url: 'pages/DeviceDetail',
         params: { deviceId: deviceId, action: 'sendFile' }
+      }).catch((e: Error) => {
+        console.error('[AppSession] openFileSendFor pushUrl failed:', e.message);
       });
+    } catch (e) {
+      console.error('[AppSession] openFileSendFor exception:', JSON.stringify(e));
     }
   }
 

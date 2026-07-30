@@ -2,7 +2,7 @@
   "string": [
     {
       "name": "module_desc",
-      "value": "HMConnect — HarmonyOS KDE Connect MVP"
+      "value": "HMConnect — HarmonyOS KDE Connect"
     },
     {
       "name": "EntryAbility_desc",
@@ -327,6 +327,14 @@
     {
       "name": "pref_plugin_mpris_desc",
       "value": "远程控制媒体播放器"
+    },
+    {
+      "name": "pref_plugin_systemvolume",
+      "value": "系统音量"
+    },
+    {
+      "name": "pref_plugin_systemvolume_desc",
+      "value": "控制对端设备的系统音量"
     },
     {
       "name": "pref_plugin_ping",

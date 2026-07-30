@@ -1,11 +1,18 @@
 import { common, wantAgent, WantAgent } from '@kit.AbilityKit';
-import { backgroundTaskManager } from '@kit.BackgroundTasksKit';
 import { notificationManager } from '@kit.NotificationKit';
 import { connection } from '@kit.NetworkKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { AppNotifier } from '../common/AppNotifier';
 import { AppSession } from '../app/AppSession';
 import { DeviceListItem } from './KdeTypes';
+import {
+  ContinuousTaskCancelInfo,
+  ContinuousTaskNotification,
+  onContinuousTaskCancel,
+  startContinuousTaskDataTransfer,
+  startContinuousTaskStringModes,
+  stopContinuousTask
+} from './ContinuousTaskApi';
 
 /**
  * Keeps the process alive under home / lock screen so KDE LAN TLS/UDP survive.
@@ -15,9 +22,10 @@ import { DeviceListItem } from './KdeTypes';
  * Plain TCP/UDP gets cancelled with:
  *   SYSTEM_CANCEL (2) + detailed SYSTEM_CANCEL_NOT_USE_MULTI_DEVICE (10)
  *
- * We use dataTransfer instead: KDE sessions continuously exchange packets
- * (battery, mpris, clipboard, files). Progress must be refreshed on the
- * system continuous-task live-view notification or the task is cancelled.
+ * Modes:
+ * - dataTransfer: KDE LAN packets (battery/mpris/clipboard/files)
+ * - +audioPlayback when remote media is playing (lock-screen 播控 official requirement)
+ * Never multiDeviceConnection alone (SoftBus-only; gets cancelled).
  */
 export class KdeBackgroundService {
   private static instance: KdeBackgroundService | null = null;
@@ -39,6 +47,12 @@ export class KdeBackgroundService {
   private progressValue: number = 0;
   private retryTimer: number = -1;
   private retryCount: number = 0;
+  /**
+   * When true, continuous task includes audioPlayback.
+   * Official lock-screen 播控: AVSession active + AUDIO_PLAYBACK long task.
+   * dataTransfer alone is not enough for lock-screen media card.
+   */
+  private wantAudioPlayback: boolean = false;
 
   private constructor() {
   }
@@ -64,10 +78,11 @@ export class KdeBackgroundService {
     console.info('[BgSvc] start');
 
     this.wireCancelListener();
-    this.updateNotification();
+    // Do not show persistent / progress banners (user request); cancel any leftover.
+    AppNotifier.getInstance().cancelPersistent();
+    this.cancelProgressBanner();
 
     this.deviceSubId = AppSession.getInstance().subscribeDevices(() => {
-      this.updateNotification();
       // Re-assert keep-alive when devices go online (task may have been cancelled while idle)
       if (!this.taskActive && this.countOnlineDevices() > 0) {
         this.ensureContinuousTask().catch(() => {
@@ -111,16 +126,97 @@ export class KdeBackgroundService {
   }
 
   /**
-   * dataTransfer continuous task + periodic live-view progress.
-   * Without this, HarmonyOS freezes the process after home/lock and TLS dies.
+   * Public re-request after external code may have disrupted the task
+   * (e.g. legacy find-phone stopBackgroundRunning).
+   */
+  public async reassertKeepAlive(): Promise<void> {
+    if (!this.context) {
+      return;
+    }
+    if (!this.running) {
+      await this.start(this.context);
+      return;
+    }
+    await this.forceRestartContinuousTask();
+  }
+
+  /**
+   * Toggle AUDIO_PLAYBACK mode for lock-screen media card.
+   * Official: AVSession active + AUDIO_PLAYBACK continuous task → 锁屏自动出播控卡片.
+   * Also keeps dataTransfer for KDE LAN packets.
+   */
+  public setMediaPlaybackLongTask(needAudio: boolean): void {
+    if (this.wantAudioPlayback === needAudio) {
+      if (needAudio && !this.taskActive) {
+        console.info('[BgSvc] audioPlayback wanted but task inactive — ensure');
+        this.ensureContinuousTask().catch(() => {
+        });
+      }
+      return;
+    }
+    this.wantAudioPlayback = needAudio;
+    console.info(
+      `[BgSvc] setMediaPlaybackLongTask audioPlayback=${needAudio} → restart modes`
+    );
+    this.forceRestartContinuousTask().catch((e: Error) => {
+      console.warn('[BgSvc] mode switch failed:', e.message);
+    });
+  }
+
+  /**
+   * Force re-request even if we think taskActive is still true.
+   * Stops existing task first so mode changes (dataTransfer ↔ +audioPlayback) apply.
+   */
+  public async forceRestartContinuousTask(): Promise<void> {
+    this.taskActive = false;
+    this.retryCount = 0;
+    this.stopProgressTimer();
+    if (this.retryTimer !== -1) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = -1;
+    }
+    if (this.context &&
+      canIUse('SystemCapability.ResourceSchedule.BackgroundTaskManager.ContinuousTask')) {
+      try {
+        stopContinuousTask(this.context);
+      } catch (_e) {
+        // ignore
+      }
+    }
+    // Brief yield so system releases previous task slot
+    await new Promise<void>((resolve: () => void) => {
+      setTimeout(() => {
+        resolve();
+      }, 120);
+    });
+    await this.ensureContinuousTask();
+  }
+
+  private buildContinuousModes(): string[] {
+    // dataTransfer: LAN (battery/mpris/clipboard/files)
+    // audioPlayback: required for lock-screen media card with AVSession (official)
+    if (this.wantAudioPlayback) {
+      return ['dataTransfer', 'audioPlayback'];
+    }
+    return ['dataTransfer'];
+  }
+
+  /**
+   * Continuous task + progress refresh.
+   * Modes: dataTransfer always; +audioPlayback when remote media is active.
    */
   private async ensureContinuousTask(): Promise<void> {
     if (!this.context) {
       return;
     }
+    if (!canIUse('SystemCapability.ResourceSchedule.BackgroundTaskManager.ContinuousTask')) {
+      console.warn('[BgSvc] ContinuousTask SysCap unavailable on this device');
+      return;
+    }
     if (this.taskActive) {
       console.info('[BgSvc] continuous task already active');
       this.ensureProgressTimer();
+      this.publishProgress();
       return;
     }
 
@@ -132,48 +228,82 @@ export class KdeBackgroundService {
       return;
     }
 
-    // dataTransfer: real LAN packet exchange (battery/mpris/clipboard/files).
-    // Do NOT use multiDeviceConnection — system requires SoftBus multi-device APIs.
-    const modes: string[] = ['dataTransfer'];
+    const modes: string[] = this.buildContinuousModes();
+    console.info(`[BgSvc] requesting continuous task modes=[${modes.join(',')}]…`);
     try {
-      const res: backgroundTaskManager.ContinuousTaskNotification =
-        await backgroundTaskManager.startBackgroundRunning(
-          this.context,
-          modes,
-          this.wantAgent
+      if (canIUse('SystemCapability.ResourceSchedule.BackgroundTaskManager.ContinuousTask')) {
+        const res: ContinuousTaskNotification =
+          await startContinuousTaskStringModes(this.context, modes, this.wantAgent);
+        this.onTaskStarted(res);
+        console.info(
+          `[BgSvc] continuous task OK modes=[${modes.join(',')}] notifyId=${res.notificationId}`
         );
-      this.onTaskStarted(res);
-      return;
+        return;
+      }
     } catch (e1) {
       const err1 = e1 as BusinessError;
       if (this.isAlreadyRunningError(err1)) {
         this.taskActive = true;
+        this.retryCount = 0;
         this.ensureProgressTimer();
+        this.publishProgress();
         console.info(`[BgSvc] continuous task already held: ${err1.message}`);
         return;
       }
+      // Dual-mode may fail — try audioPlayback+dataTransfer reversed, then dataTransfer only
+      if (this.wantAudioPlayback && modes.length > 1) {
+        console.warn(
+          `[BgSvc] dual-mode failed code=${err1.code} ${err1.message}, try audioPlayback+dataTransfer order`
+        );
+        try {
+          const resAlt: ContinuousTaskNotification =
+            await startContinuousTaskStringModes(
+              this.context,
+              ['audioPlayback', 'dataTransfer'],
+              this.wantAgent
+            );
+          this.onTaskStarted(resAlt);
+          console.info('[BgSvc] continuous task OK (audioPlayback first)');
+          return;
+        } catch (eAlt) {
+          console.warn('[BgSvc] alt dual-mode failed:', JSON.stringify(eAlt));
+        }
+        try {
+          const res2: ContinuousTaskNotification =
+            await startContinuousTaskStringModes(
+              this.context,
+              ['dataTransfer'],
+              this.wantAgent
+            );
+          this.onTaskStarted(res2);
+          console.warn(
+            '[BgSvc] held dataTransfer only — lock-screen card may be missing without audioPlayback'
+          );
+          return;
+        } catch (_e2) {
+        }
+      }
       console.warn(
-        `[BgSvc] string[] dataTransfer failed: code=${err1.code} ${err1.message}, try enum`
+        `[BgSvc] string[] modes failed: code=${err1.code} ${err1.message}, try DATA_TRANSFER enum`
       );
     }
 
     try {
-      await backgroundTaskManager.startBackgroundRunning(
-        this.context,
-        backgroundTaskManager.BackgroundMode.DATA_TRANSFER,
-        this.wantAgent
-      );
-      this.taskActive = true;
-      this.retryCount = 0;
-      this.ensureProgressTimer();
-      // Immediately publish a progress tick (enum path has no ContinuousTaskNotification)
-      this.publishProgress();
-      console.info('[BgSvc] continuous task started (DATA_TRANSFER enum)');
+      if (canIUse('SystemCapability.ResourceSchedule.BackgroundTaskManager.ContinuousTask')) {
+        await startContinuousTaskDataTransfer(this.context, this.wantAgent);
+        this.taskActive = true;
+        this.retryCount = 0;
+        this.ensureProgressTimer();
+        this.publishProgress();
+        console.info('[BgSvc] continuous task started (DATA_TRANSFER enum)');
+      }
     } catch (e2) {
       const err2 = e2 as BusinessError;
       if (this.isAlreadyRunningError(err2)) {
         this.taskActive = true;
+        this.retryCount = 0;
         this.ensureProgressTimer();
+        this.publishProgress();
         console.info(`[BgSvc] continuous task already held (enum): ${err2.message}`);
         return;
       }
@@ -181,10 +311,11 @@ export class KdeBackgroundService {
       console.error(
         `[BgSvc] startBackgroundRunning failed: code=${err2.code} ${err2.message}`
       );
+      this.scheduleRetry(false);
     }
   }
 
-  private onTaskStarted(res: backgroundTaskManager.ContinuousTaskNotification): void {
+  private onTaskStarted(res: ContinuousTaskNotification): void {
     this.taskActive = true;
     this.retryCount = 0;
     this.taskNotificationId = res.notificationId;
@@ -216,86 +347,21 @@ export class KdeBackgroundService {
   }
 
   /**
-   * Update continuous-task live-view progress.
-   * Required for dataTransfer; without updates the task is cancelled.
+   * Continuous-task keepalive tick (no user-facing banner).
+   * We intentionally do not publish HMConnect progress notifications.
+   * System may still attach a single long-running-task chip to startBackgroundRunning.
    */
   private publishProgress(): void {
     if (!this.context || !this.taskActive) {
       return;
     }
-    const online = this.countOnlineDevices();
-    // Indeterminate-style cycling progress (connection is ongoing, not a finite download)
     this.progressValue = (this.progressValue + 7) % 100;
-    const text = online > 0
-      ? `已连接 ${online} 台设备，保持数据通道…`
-      : '等待设备连接，保持网络发现…';
-
-    // Prefer system continuous-task notification id when available
-    const id = this.taskNotificationId >= 0
-      ? this.taskNotificationId
-      : AppNotifier.PERSISTENT_NOTIFY_ID_FOR_PROGRESS;
-
-    try {
-      const request: notificationManager.NotificationRequest = {
-        id: id,
-        notificationSlotType: this.taskSlotType,
-        content: {
-          notificationContentType:
-            notificationManager.ContentType.NOTIFICATION_CONTENT_SYSTEM_LIVE_VIEW,
-          systemLiveView: {
-            title: 'HMConnect',
-            text: text,
-            typeCode: 0,
-            progress: {
-              maxValue: 100,
-              currentValue: this.progressValue,
-              isPercentage: true
-            }
-          }
-        },
-        isOngoing: true,
-        tapDismissed: false
-      };
-      if (this.wantAgent) {
-        request.wantAgent = this.wantAgent;
-      }
-      notificationManager.publish(request).then(() => {
-        console.info(`[BgSvc] progress updated id=${id} value=${this.progressValue} online=${online}`);
-      }).catch((e: BusinessError) => {
-        // Fallback: plain text update if live-view type rejected
-        console.warn(
-          `[BgSvc] live-view progress failed code=${e.code} ${e.message}, try basic`
-        );
-        this.publishProgressBasic(id, text);
-      });
-    } catch (e) {
-      const err = e as BusinessError;
-      console.warn(`[BgSvc] publishProgress exception: code=${err.code} ${err.message}`);
-    }
   }
 
-  private publishProgressBasic(id: number, text: string): void {
+  /** Drop our progress fallback banner if present. */
+  private cancelProgressBanner(): void {
     try {
-      const request: notificationManager.NotificationRequest = {
-        id: id,
-        notificationSlotType: notificationManager.SlotType.SERVICE_INFORMATION,
-        content: {
-          notificationContentType:
-            notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
-          normal: {
-            title: 'HMConnect',
-            text: text
-          }
-        },
-        isOngoing: true,
-        tapDismissed: false
-      };
-      if (this.wantAgent) {
-        request.wantAgent = this.wantAgent;
-      }
-      notificationManager.publish(request).catch((e: BusinessError) => {
-        console.warn(`[BgSvc] basic progress failed: code=${e.code} ${e.message}`);
-      });
+      notificationManager.cancel(AppNotifier.PERSISTENT_NOTIFY_ID_FOR_PROGRESS);
     } catch (_e) {
       // ignore
     }
@@ -382,51 +448,68 @@ export class KdeBackgroundService {
     if (this.cancelListening) {
       return;
     }
-    try {
-      backgroundTaskManager.on('continuousTaskCancel',
-        (info: backgroundTaskManager.ContinuousTaskCancelInfo) => {
-          const name = this.cancelReasonName(info.reason as number);
+    if (!canIUse('SystemCapability.ResourceSchedule.BackgroundTaskManager.ContinuousTask')) {
+      console.warn('[BgSvc] skip cancel listener: ContinuousTask SysCap unavailable');
+      return;
+    }
+    if (canIUse('SystemCapability.ResourceSchedule.BackgroundTaskManager.ContinuousTask')) {
+      try {
+        onContinuousTaskCancel((info: ContinuousTaskCancelInfo) => {
+          const reason = info.reason;
+          const name = this.cancelReasonName(reason);
           console.warn(
-            `[BgSvc] continuousTaskCancel id=${info.id} reason=${info.reason} (${name})`
+            `[BgSvc] continuousTaskCancel id=${info.id} reason=${reason} (${name})`
           );
           this.taskActive = false;
           this.stopProgressTimer();
-          // User dismissed notification — do not fight the user
-          if (info.reason === backgroundTaskManager.ContinuousTaskCancelReason.USER_CANCEL ||
-            info.reason ===
-              backgroundTaskManager.ContinuousTaskCancelReason.USER_CANCEL_REMOVE_NOTIFICATION) {
-            console.info('[BgSvc] user cancelled continuous task; skip auto-retry');
+
+          // HMConnect must stay connected under lock / after shade interactions.
+          // Official docs: deleting the continuous-task notification stops the task
+          // with USER_CANCEL. Pulling the shade often mis-swipes that banner; skipping
+          // retry left TLS unprotected. Always re-request dataTransfer with backoff.
+          // ContinuousTaskCancelReason.USER_CANCEL = 1, USER_CANCEL_REMOVE_NOTIFICATION = 3
+          const isUserCancel = reason === 1 || reason === 3;
+          if (isUserCancel) {
+            this.retryCount = 0;
+            console.info('[BgSvc] user-facing cancel — fast re-request continuous task');
+            this.scheduleRetry(true);
             return;
           }
-          // System cancelled (wrong mode / low speed / consistency) — retry dataTransfer
-          this.scheduleRetry();
+          this.scheduleRetry(false);
         });
-      this.cancelListening = true;
-      console.info('[BgSvc] continuousTaskCancel listener registered');
-    } catch (e) {
-      const err = e as BusinessError;
-      console.warn(
-        `[BgSvc] on continuousTaskCancel failed: code=${err.code} ${err.message}`
-      );
+        this.cancelListening = true;
+        console.info('[BgSvc] continuousTaskCancel listener registered');
+      } catch (e) {
+        const err = e as BusinessError;
+        console.warn(
+          `[BgSvc] on continuousTaskCancel failed: code=${err.code} ${err.message}`
+        );
+      }
     }
   }
 
-  private scheduleRetry(): void {
+  /**
+   * Re-apply dataTransfer after cancel.
+   * @param preferFast true after USER_CANCEL (1s / 3s / 8s); false for system (3s / 8s / 15s)
+   */
+  private scheduleRetry(preferFast: boolean = false): void {
     if (!this.running || !this.context) {
       return;
     }
     if (this.retryTimer !== -1) {
       return;
     }
-    // Backoff: 3s, 8s, 15s, then stop (avoid thrashing)
-    const delays: number[] = [3000, 8000, 15000];
+    const delays: number[] = preferFast ? [1000, 3000, 8000] : [3000, 8000, 15000];
     if (this.retryCount >= delays.length) {
       console.warn('[BgSvc] continuous task retry exhausted');
       return;
     }
     const delay = delays[this.retryCount];
     this.retryCount++;
-    console.info(`[BgSvc] schedule continuous task retry #${this.retryCount} in ${delay}ms`);
+    console.info(
+      `[BgSvc] schedule continuous task retry #${this.retryCount} in ${delay}ms` +
+        (preferFast ? ' (fast)' : '')
+    );
     this.retryTimer = setTimeout(() => {
       this.retryTimer = -1;
       this.ensureContinuousTask().catch((e: Error) => {
@@ -470,48 +553,25 @@ export class KdeBackgroundService {
       this.netConn = null;
     }
 
-    if (this.context) {
+    if (this.context &&
+      canIUse('SystemCapability.ResourceSchedule.BackgroundTaskManager.ContinuousTask')) {
       try {
-        backgroundTaskManager.stopBackgroundRunning(this.context);
+        stopContinuousTask(this.context);
       } catch (_e) {
         // ignore
       }
     }
 
     AppNotifier.getInstance().cancelPersistent();
+    this.cancelProgressBanner();
     this.wantAgent = null;
     this.taskNotificationId = -1;
     this.context = null;
   }
 
-  /** Called when device list changes. Debounced to avoid flicker during state transitions. */
+  /** Kept for callers; persistent banner is disabled. */
   public updateNotification(): void {
-    if (!this.running || !this.context) {
-      return;
-    }
-    if (this.debounceTimer !== -1) {
-      clearTimeout(this.debounceTimer);
-    }
-    this.debounceTimer = setTimeout(() => {
-      this.debounceTimer = -1;
-      this.doUpdateNotification();
-    }, 300);
-  }
-
-  private doUpdateNotification(): void {
-    if (!this.context) {
-      return;
-    }
-    const devices: DeviceListItem[] = AppSession.getInstance().getLastDevices();
-    const names: string[] = [];
-    const ids: string[] = [];
-    for (const d of devices) {
-      if (d.trusted && d.online) {
-        names.push(d.deviceName);
-        ids.push(d.deviceId);
-      }
-    }
-    AppNotifier.getInstance().notifyPersistent(names, ids);
+    AppNotifier.getInstance().cancelPersistent();
   }
 
   private onNetworkChange(): void {

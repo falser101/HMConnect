@@ -289,6 +289,14 @@
       "value": "Provides a remote control for your media player"
     },
     {
+      "name": "pref_plugin_systemvolume",
+      "value": "System volume"
+    },
+    {
+      "name": "pref_plugin_systemvolume_desc",
+      "value": "Control the system volume of the remote device"
+    },
+    {
       "name": "pref_plugin_ping",
       "value": "Ping"
     },

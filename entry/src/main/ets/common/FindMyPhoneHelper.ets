@@ -1,11 +1,12 @@
-import { common, Want, wantAgent, WantAgent } from '@kit.AbilityKit';
+import { common, Want } from '@kit.AbilityKit';
 import { vibrator } from '@kit.SensorServiceKit';
 import { media } from '@kit.MediaKit';
 import { audio } from '@kit.AudioKit';
 import { avSession } from '@kit.AVSessionKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { AppNotifier } from './AppNotifier';
-import { startContinuousTask as bgStart, stopContinuousTask as bgStop } from './BackgroundTaskWrap';
+import { KdeBackgroundService } from '../service/KdeBackgroundService';
+import { RemoteMprisMediaSession } from '../service/RemoteMprisMediaSession';
 
 export type FindPhoneStateListener = (active: boolean, peerName: string) => void;
 
@@ -13,9 +14,11 @@ export type FindPhoneStateListener = (active: boolean, peerName: string) => void
  * Continuous ring + vibrate for desktop "Find My Phone".
  *
  * Background path relies on:
- * - continuous task (audioPlayback) when SysCap available
- * - AVSession (system keeps audio task alive)
- * - AVPlayer loop
+ * - KdeBackgroundService continuous task (dataTransfer) — process-wide keep-alive
+ * - AVSession + AVPlayer loop for the alarm sound
+ *
+ * IMPORTANT: do NOT call stopBackgroundRunning here — that kills the shared
+ * continuous task used by LAN keep-alive (symptoms: “长时任务没了”).
  *
  * Stops only on explicit stop() / safety timeout / disconnect.
  */
@@ -29,7 +32,6 @@ export class FindMyPhoneHelper {
   private vibTimer: number = -1;
   private player: media.AVPlayer | null = null;
   private session: avSession.AVSession | null = null;
-  private bgTaskStarted: boolean = false;
   private listeners: Map<number, FindPhoneStateListener> = new Map();
   private nextListenerId: number = 1;
   private static readonly DEFAULT_DURATION_MS: number = 120000;
@@ -86,8 +88,8 @@ export class FindMyPhoneHelper {
 
     this.notifyListeners();
 
-    // 1) Keep process alive for audio (must start BEFORE / with playback)
-    await this.startContinuousTask();
+    // 1) Re-assert shared continuous task (owned by KdeBackgroundService only)
+    await KdeBackgroundService.getInstance().ensureRunning();
     await this.startAvSession();
 
     // 2) Notification (always, including background)
@@ -129,7 +131,18 @@ export class FindMyPhoneHelper {
     this.stopVibration();
     this.stopAudio();
     this.stopAvSession();
-    this.stopContinuousTask();
+    // Re-hold dataTransfer keep-alive after find-phone ends (never stopBackgroundRunning).
+    KdeBackgroundService.getInstance().forceRestartContinuousTask().catch((e: Error) => {
+      console.warn('[FindPhone] re-ensure continuous task failed:', e.message);
+    });
+    // FindMyPhone AVSession may have stolen system media focus — re-init remote card
+    const media = RemoteMprisMediaSession.getInstance();
+    if (this.context) {
+      media.setContext(this.context);
+    }
+    media.initSession().catch((e: Error) => {
+      console.warn('[FindPhone] re-init RemoteMpris:', e.message);
+    });
     if (cancelNotify) {
       AppNotifier.getInstance().cancelFindMyPhone().catch(() => {
       });
@@ -140,32 +153,6 @@ export class FindMyPhoneHelper {
     if (cancelNotify) {
       this.peerName = '';
     }
-  }
-
-  private async startContinuousTask(): Promise<void> {
-    if (!this.context || this.bgTaskStarted) {
-      return;
-    }
-    let agent = await this.buildFindWantAgent(9101, 'findmyphone');
-    if (!agent) {
-      console.warn('[FindPhone] continuous task: no WantAgent');
-      return;
-    }
-    let agent2 = await this.buildFindWantAgent(9102, 'findmyphone');
-    let ok = await bgStart(this.context, agent, agent2 ?? agent);
-    this.bgTaskStarted = ok;
-    if (ok) {
-      console.info('[FindPhone] continuous task started');
-    }
-  }
-
-  private stopContinuousTask(): void {
-    if (!this.context || !this.bgTaskStarted) {
-      this.bgTaskStarted = false;
-      return;
-    }
-    this.bgTaskStarted = false;
-    bgStop(this.context);
   }
 
   private async startAvSession(): Promise<void> {
@@ -221,36 +208,6 @@ export class FindMyPhoneHelper {
       });
     } catch (_e) {
       // ignore
-    }
-  }
-
-  private async buildFindWantAgent(requestCode: number, from: string): Promise<WantAgent | undefined> {
-    if (!this.context) {
-      return undefined;
-    }
-    try {
-      let info: wantAgent.WantAgentInfo = {
-        wants: [
-          {
-            deviceId: '',
-            bundleName: this.context.abilityInfo.bundleName,
-            moduleName: this.context.abilityInfo.moduleName,
-            abilityName: this.context.abilityInfo.name,
-            action: 'ohos.want.action.home',
-            parameters: {
-              'fromNotification': from
-            }
-          }
-        ],
-        actionType: wantAgent.OperationType.START_ABILITY,
-        requestCode: requestCode,
-        actionFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
-      };
-      return await wantAgent.getWantAgent(info);
-    } catch (e) {
-      let err = e as BusinessError;
-      console.error(`[FindPhone] WantAgent failed: ${err.code} ${err.message}`);
-      return undefined;
     }
   }
 
