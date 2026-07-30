@@ -61,13 +61,21 @@ import { BatteryHelper } from '../common/BatteryHelper';
 import { FindMyPhoneHelper } from '../common/FindMyPhoneHelper';
 import { VerificationKeyHelper } from '../common/VerificationKeyHelper';
 import { RemoteMprisMediaSession } from './RemoteMprisMediaSession';
+import {
+  LocalMediaSnapshot,
+  SystemMediaExporter,
+  SystemMediaMonitor
+} from './SystemMediaMonitor';
 
 /**
  * Per-device connection session (one peer).
  * Reverse-path preferred; outbound TLS fallback after reverse timeout.
  * Owned by KdeClient multi-session hub — does NOT own the shared TCP listen socket.
+ *
+ * Implements SystemMediaExporter: pushes local HarmonyOS media sessions to the peer
+ * (Android MprisPlugin) and accepts kdeconnect.mpris.request control packets.
  */
-export class DeviceSession {
+export class DeviceSession implements SystemMediaExporter {
   /** Stable peer id once known (may be empty during early outbound). */
   private boundDeviceId: string = '';
   /** Shared listen port from hub (advertised in identity). */
@@ -136,12 +144,11 @@ export class DeviceSession {
   /** Remote system volume sinks (Android SystemVolumePlugin). */
   private systemVolumeSinks: SystemVolumeSink[] = [];
   private onSystemVolumeChange?: (sinks: SystemVolumeSink[]) => void;
-  /** Local media state for MPRIS receiver (remote controls us). */
-  private localPlaying: boolean = false;
-  private localVolume: number = 50;
-  /** AVSession for receiving system media keys and reporting state. */
+  /** AVSession for lock-screen remote control (peer media → local card). */
   private mprisSession: avSession.AVSession | null = null;
   private mprisController: avSession.AVSessionController | null = null;
+  /** Registered as SystemMediaMonitor exporter for this peer. */
+  private mediaExportRegistered: boolean = false;
   private statusCallback?: (status: KdeStatus) => void;
   private onSessionChange?: (live: boolean, paired: boolean) => void;
   private lineBuffer: string = '';
@@ -1606,115 +1613,186 @@ export class DeviceSession {
     this.notifySystemVolumeChange();
   }
 
-  /** Handle incoming mpris.request (remote controls our media). */
+  /**
+   * Handle incoming kdeconnect.mpris.request (Android MprisPlugin → control our system media).
+   * Mirrors Android MprisReceiverPlugin.onPacketReceived.
+   */
   private handleMprisRequest(body: object): void {
     const b = body as Record<string, Object>;
+    const monitor = SystemMediaMonitor.getInstance();
+    const keys: string[] = Object.keys(b);
+    console.info(
+      `[KDE-MVP] mpris.request keys=[${keys.join(',')}] playersKnown=[${monitor.getPlayerNames().join('|')}] ` +
+        `preferred="${monitor.getPreferredPlayerName()}" exportActive=${this.isMediaExportActive()}`
+    );
 
-    // Request player list
     if (b['requestPlayerList'] === true) {
-      const resp: Record<string, Object> = {
-        'playerList': ['HMConnect']
-      };
-      this.sendMprisStatus(resp);
+      console.info('[KDE-MVP] mpris.request requestPlayerList → resync + push');
+      monitor.resyncAll('peer-playerList').then(() => {
+        this.pushLocalPlayerList(monitor.getPlayerNames());
+      }).catch((err: Object) => {
+        console.error(`[KDE-MVP] mpris.request playerList resync fail: ${JSON.stringify(err)}`);
+        this.pushLocalPlayerList(monitor.getPlayerNames());
+      });
       return;
     }
 
-    // Send metadata for a player
-    if (b['requestNowPlaying'] === true) {
-      this.sendLocalMprisStatus();
+    let playerName: string =
+      typeof b['player'] === 'string' ? b['player'] as string : '';
+    if (playerName.length === 0) {
+      console.warn('[KDE-MVP] mpris.request ignored: no player field');
       return;
     }
 
-    // Volume control
-    if (typeof b['setVolume'] === 'number') {
-      const vol: number = b['setVolume'] as number;
-      console.info('[KDE-MVP] MPRIS receiver setVolume:', vol);
-      this.sendLocalMprisStatus();
+    // Album art request: we only export string albumArtUrl (no bitmap payload yet)
+    if (typeof b['albumArtUrl'] === 'string' && (b['albumArtUrl'] as string).length > 0) {
+      console.info(`[KDE-MVP] mpris.request albumArtUrl player=${playerName}`);
+      const snap = monitor.getSnapshot(playerName);
+      if (snap) {
+        this.pushLocalMetadata(snap);
+      } else {
+        console.warn(`[KDE-MVP] mpris.request albumArt: unknown player ${playerName}`);
+      }
       return;
     }
 
-    // Seek
+    if (b['requestNowPlaying'] === true || b['requestVolume'] === true) {
+      console.info(
+        `[KDE-MVP] mpris.request nowPlaying/volume player=${playerName} ` +
+          `nowPlaying=${b['requestNowPlaying'] === true} volume=${b['requestVolume'] === true}`
+      );
+      const snap = monitor.getSnapshot(playerName);
+      if (snap) {
+        console.info(
+          `[KDE-MVP] mpris.request nowPlaying hit title="${snap.title}" playing=${snap.isPlaying} ` +
+            `bundle=${snap.bundleName} session=${snap.sessionId}`
+        );
+        this.pushLocalMetadata(snap);
+      } else {
+        console.warn(
+          `[KDE-MVP] mpris.request nowPlaying MISS player=${playerName} — resync`
+        );
+        monitor.resyncAll('peer-nowPlaying-miss').then(() => {
+          const again = monitor.getSnapshot(playerName) ??
+            monitor.getSnapshot(monitor.getPreferredPlayerName());
+          if (again) {
+            this.pushLocalMetadata(again);
+          } else {
+            console.warn('[KDE-MVP] mpris.request nowPlaying still empty after resync');
+          }
+        }).catch(() => {
+        });
+      }
+      return;
+    }
+
     if (typeof b['SetPosition'] === 'number') {
-      console.info('[KDE-MVP] MPRIS receiver SetPosition:', b['SetPosition']);
+      const pos = b['SetPosition'] as number;
+      console.info(`[KDE-MVP] mpris.request SetPosition player=${playerName} pos=${pos}`);
+      monitor.setPosition(playerName, pos).catch((err: Object) => {
+        console.error(`[KDE-MVP] SetPosition fail: ${JSON.stringify(err)}`);
+      });
       return;
     }
 
-    // Action
+    if (typeof b['Seek'] === 'number') {
+      const offset = b['Seek'] as number;
+      const offsetMs = Math.abs(offset) > 100000 ? Math.floor(offset / 1000) : offset;
+      console.info(`[KDE-MVP] mpris.request Seek player=${playerName} offsetMs=${offsetMs}`);
+      monitor.seek(playerName, offsetMs).catch((err: Object) => {
+        console.error(`[KDE-MVP] Seek fail: ${JSON.stringify(err)}`);
+      });
+      return;
+    }
+
+    if (typeof b['setVolume'] === 'number') {
+      console.info(`[KDE-MVP] mpris.request setVolume ignored player=${playerName} vol=${b['setVolume']}`);
+      const snap = monitor.getSnapshot(playerName);
+      if (snap) {
+        this.pushLocalMetadata(snap);
+      }
+      return;
+    }
+
     const action: string = typeof b['action'] === 'string' ? b['action'] as string : '';
     if (action.length > 0) {
-      this.handleMprisAction(action);
+      console.info(
+        `[KDE-MVP] mpris.request action=${action} player=${playerName} ` +
+          `→ monitor.sendAction (with refresh/retry)`
+      );
+      monitor.sendAction(playerName, action).catch((err: Object) => {
+        console.error(`[KDE-MVP] mpris action fail: ${JSON.stringify(err)}`);
+      });
+    } else {
+      console.warn(`[KDE-MVP] mpris.request unhandled body keys=[${keys.join(',')}]`);
     }
   }
 
-  /** Execute media control via local state + AVSession update. */
-  private handleMprisAction(action: string): void {
-    console.info('[KDE-MVP] MPRIS receiver action:', action);
+  // ── SystemMediaExporter (local HarmonyOS media → Android) ──
 
-    // Update local state
-    this.fallbackHandleAction(action);
-
-    // Control the real foreground audio app (needs MANAGE_MEDIA_RESOURCES_FOR_PUBLIC)
-    this.sendToActiveAudioSession(action);
+  public isMediaExportActive(): boolean {
+    return this.isTlsLive() && this.sessionLive && this.isPluginEnabled(PLUGIN_MPRIS);
   }
 
-  /**
-   * Discover active audio sessions and send commands.
-   * Requires ohos.permission.MANAGE_MEDIA_RESOURCES_FOR_PUBLIC (granted for this build).
-   */
-  private async sendToActiveAudioSession(action: string): Promise<void> {
-    try {
-      const descriptors: avSession.AVSessionDescriptor[] = await avSession.getAllSessionDescriptors();
-      console.info('[KDE-MVP] getAllSessionDescriptors OK, count:', descriptors.length);
-      const target = descriptors.find((d: avSession.AVSessionDescriptor) => d.type === 'audio' && d.isActive);
-      if (!target) {
-        console.info('[KDE-MVP] no active audio session found');
-        return;
-      }
-      console.info('[KDE-MVP] found audio session:', target.sessionTag, target.type);
-      const controller = await avSession.createController(target.sessionId);
-      const cmdMap: Record<string, avSession.AVControlCommandType> = {
-        'Play': 'play',
-        'Pause': 'pause',
-        'PlayPause': 'play',
-        'Next': 'playNext',
-        'Previous': 'playPrevious'
-      };
-      const cmd: avSession.AVControlCommandType | undefined = cmdMap[action];
-      if (cmd) {
-        await controller.sendControlCommand({ command: cmd });
-        console.info('[KDE-MVP] real audio session command OK:', cmd);
-      }
-    } catch (e) {
-      console.warn('[KDE-MVP] getAllSessionDescriptors failed:', JSON.stringify(e));
+  public onLocalPlayerList(names: string[]): void {
+    this.pushLocalPlayerList(names);
+  }
+
+  public onLocalPlayerMetadata(snap: LocalMediaSnapshot): void {
+    this.pushLocalMetadata(snap);
+  }
+
+  private pushLocalPlayerList(names: string[]): void {
+    if (!this.isMediaExportActive()) {
+      return;
     }
+    const resp: Record<string, Object> = {
+      'playerList': names,
+      'supportAlbumArtPayload': false
+    };
+    this.sendMprisStatus(resp);
+    console.info(`[KDE-MVP] export playerList (${names.length}): ${names.join(', ')}`);
   }
 
-  private fallbackHandleAction(action: string): void {
-    switch (action) {
-      case 'Play':
-        this.localPlaying = true;
-        break;
-      case 'Pause':
-        this.localPlaying = false;
-        break;
-      case 'PlayPause':
-        this.localPlaying = !this.localPlaying;
-        break;
-      default:
-        this.localPlaying = false;
+  private pushLocalMetadata(snap: LocalMediaSnapshot): void {
+    if (!this.isMediaExportActive()) {
+      console.info(
+        `[KDE-MVP] export meta skip (inactive) player=${snap.player} tls=${this.isTlsLive()} plugin=${this.isPluginEnabled(PLUGIN_MPRIS)}`
+      );
+      return;
     }
-    this.sendLocalMprisStatus();
+    const status: Record<string, Object> = {
+      'player': snap.player,
+      'title': snap.title,
+      'artist': snap.artist,
+      'album': snap.album,
+      'nowPlaying': snap.nowPlaying,
+      'isPlaying': snap.isPlaying,
+      'pos': snap.pos,
+      'length': snap.length,
+      'canPlay': snap.canPlay,
+      'canPause': snap.canPause,
+      'canGoNext': snap.canGoNext,
+      'canGoPrevious': snap.canGoPrevious,
+      'canSeek': snap.canSeek,
+      'volume': snap.volume,
+      'albumArtUrl': snap.albumArtUrl
+    };
+    console.info(
+      `[KDE-MVP] export meta player="${snap.player}" bundle=${snap.bundleName} ` +
+        `playing=${snap.isPlaying} title="${snap.title}" artist="${snap.artist}" pos=${snap.pos}/${snap.length}`
+    );
+    this.sendMprisStatus(status);
   }
 
-  // ── AVSession for media controller identity ───────────────
+  // ── AVSession lock-screen card for *remote* (Android) media ───────────────
 
-  /** Only one process-wide AVSession — multi-device must share it. */
+  /** Only one process-wide lock-screen AVSession — multi-device must share it. */
   private static mprisOwner: DeviceSession | null = null;
 
   /**
-   * Official RemoteMediaSessionManager flow:
-   * initSession (create+commands+activate) → startBackgroundTask(AUDIO_PLAYBACK)
-   * then MPRIS updates call updateRemoteMedia.
+   * 1) RemoteMprisMediaSession: show peer media on lock screen / 播控中心
+   * 2) SystemMediaMonitor: export *local* system media to peer (Android controls us)
    */
   public async setupMprisReceiver(ctx: common.UIAbilityContext): Promise<void> {
     this.context = ctx;
@@ -1722,16 +1800,32 @@ export class DeviceSession {
     media.setContext(ctx);
     DeviceSession.mprisOwner = this;
     try {
-      // 官方：先激活 AVSession，再申请 AUDIO_PLAYBACK 长时任务（init 内已做）
       await media.initSession();
       console.info('[KDE-MVP] RemoteMediaSession init+bgTask OK (锁屏/播控)');
     } catch (e) {
       console.warn('[KDE-MVP] RemoteMediaSession init failed:', JSON.stringify(e));
     }
     this.syncRemoteMediaSession();
+
+    // Start system media monitor (Android MprisReceiver equivalent)
+    const ownBundle = ctx.abilityInfo?.bundleName ?? 'com.falser101.xyz';
+    try {
+      await SystemMediaMonitor.getInstance().start(ownBundle);
+      if (!this.mediaExportRegistered) {
+        SystemMediaMonitor.getInstance().addExporter(this);
+        this.mediaExportRegistered = true;
+        console.info('[KDE-MVP] SystemMediaMonitor exporter registered');
+      }
+    } catch (e) {
+      console.warn('[KDE-MVP] SystemMediaMonitor start failed:', JSON.stringify(e));
+    }
   }
 
   public teardownMprisReceiver(): void {
+    if (this.mediaExportRegistered) {
+      SystemMediaMonitor.getInstance().removeExporter(this);
+      this.mediaExportRegistered = false;
+    }
     this.mprisController = null;
     this.mprisSession = null;
     RemoteMprisMediaSession.getInstance().clearIfTarget(this);
@@ -1740,31 +1834,11 @@ export class DeviceSession {
     }
   }
 
-  /** Send local playback status to remote via kdeconnect.mpris. */
-  private sendLocalMprisStatus(): void {
-    if (!this.isTlsLive()) {
-      return;
-    }
-    const status: Record<string, Object> = {
-      'player': 'HMConnect',
-      'title': 'HMConnect',
-      'artist': '',
-      'album': '',
-      'isPlaying': this.localPlaying,
-      'canPlay': true,
-      'canPause': true,
-      'canGoNext': true,
-      'canGoPrevious': true,
-      'canSeek': false,
-      'volume': this.localVolume,
-      'length': -1,
-      'pos': 0
-    };
-    this.sendMprisStatus(status);
-  }
-
   private sendMprisStatus(status: Record<string, Object>): void {
     if (!this.isPluginEnabled(PLUGIN_MPRIS)) {
+      return;
+    }
+    if (!this.isTlsLive()) {
       return;
     }
     const json: string = serializePacket(PACKET_TYPE_MPRIS, status);

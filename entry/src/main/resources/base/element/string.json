@@ -38,7 +38,7 @@
     },
     {
       "name": "permission_media_reason",
-      "value": "用于远程控制多媒体播放（暂停、切歌、调节音量）"
+      "value": "用于读取本机媒体播放状态并允许已配对设备远程控制播放（暂停、切歌、进度）"
     },
     {
       "name": "settings_device_name",

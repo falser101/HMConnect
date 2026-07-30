@@ -91,7 +91,7 @@
         "reason": "$string:permission_media_reason",
         "usedScene": {
           "abilities": ["EntryAbility"],
-          "when": "inuse"
+          "when": "always"
         }
       }
     ]
