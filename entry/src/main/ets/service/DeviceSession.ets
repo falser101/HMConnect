@@ -1338,33 +1338,69 @@ export class DeviceSession implements SystemMediaExporter {
   }
 
   /**
-   * Seek by offset in microseconds (Android sendSeek / MPRIS Seek).
-   * Also optimistically adjusts pos (ms).
+   * Seek by offset in microseconds (Android MprisPlayer.sendSeek).
+   * UI page uses selected player (uiCommandPlayer), matching Android targetPlayer.
    */
   public mprisSeek(offsetUs: number): void {
-    const p = this.remoteMediaPlayer() ?? this.uiCommandPlayer();
+    this.mprisSeekOnPlayer(this.uiCommandPlayer(), offsetUs);
+  }
+
+  /** Lock-screen / system card seek (Android notification player). */
+  public mprisMediaSeek(offsetUs: number): void {
+    this.mprisSeekOnPlayer(this.remoteMediaPlayer(), offsetUs);
+  }
+
+  /**
+   * Rew/FF by offset (µs). Prefer absolute SetPosition — same path as the progress bar.
+   * Android MprisReceiver only handles SetPosition (not Seek); desktop accepts both.
+   * Base position includes elapsed time while playing (Android MprisPlayer.position).
+   */
+  private mprisSeekOnPlayer(p: MprisPlayerState | null, offsetUs: number): void {
     if (!p || p.player.length === 0 || !this.isMprisSeekAllowed(p)) {
+      console.warn(
+        `[KDE-MVP] mprisSeek skipped player=${p?.player ?? ''} canSeek=${p?.canSeek} len=${p?.length} pos=${p?.pos}`
+      );
       return;
     }
-    const cmd: Record<string, Object> = { 'player': p.player, 'Seek': Math.round(offsetUs) };
-    this.sendMprisCommand(cmd);
+    let baseMs = p.pos;
+    if (p.isPlaying) {
+      baseMs = p.pos + (Date.now() - p.lastPositionTime);
+    }
     const offsetMs: number = Math.round(offsetUs / 1000);
-    const updated = this.copyMprisPlayer(p);
-    let newPos: number = p.pos + offsetMs;
-    if (p.length > 0) {
+    let newPos: number = baseMs + offsetMs;
+    if (p.length >= 0) {
       newPos = Math.max(0, Math.min(p.length, newPos));
     } else {
       newPos = Math.max(0, newPos);
     }
+    newPos = Math.round(newPos);
+    console.info(
+      `[KDE-MVP] mprisSeek ${offsetMs}ms → SetPosition ${newPos}ms ` +
+        `(base=${Math.round(baseMs)} player=${p.player})`
+    );
+    // Absolute position — identical to slider drag (works on Android receiver + local export)
+    const cmd: Record<string, Object> = {
+      'player': p.player,
+      'SetPosition': newPos
+    };
+    this.sendMprisCommand(cmd);
+    const updated = this.copyMprisPlayer(p);
     updated.pos = newPos;
     updated.lastPositionTime = Date.now();
     this.storeMprisPlayer(updated);
     this.notifyMprisChange();
   }
 
-  /** Absolute position in milliseconds (Android sendSetPosition). */
+  /** Absolute position in ms (Android sendSetPosition) — UI selection. */
   public mprisSetPosition(positionMs: number): void {
-    const p = this.remoteMediaPlayer() ?? this.uiCommandPlayer();
+    this.mprisSetPositionOnPlayer(this.uiCommandPlayer(), positionMs);
+  }
+
+  public mprisMediaSetPosition(positionMs: number): void {
+    this.mprisSetPositionOnPlayer(this.remoteMediaPlayer(), positionMs);
+  }
+
+  private mprisSetPositionOnPlayer(p: MprisPlayerState | null, positionMs: number): void {
     if (!p || p.player.length === 0 || !this.isMprisSeekAllowed(p)) {
       return;
     }

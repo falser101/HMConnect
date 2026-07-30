@@ -24,8 +24,9 @@ export interface RemoteMprisCommandTarget {
   mprisStop(): void;
   mprisMediaPrevious(): void;
   mprisMediaNext(): void;
-  mprisSetPosition(positionMs: number): void;
-  mprisSeek(offsetUs: number): void;
+  /** Lock-screen uses notification player (not UI spinner selection). */
+  mprisMediaSetPosition(positionMs: number): void;
+  mprisMediaSeek(offsetUs: number): void;
   mprisToggleLoop(): void;
   isTlsLive(): boolean;
   getBoundDeviceId(): string;
@@ -335,7 +336,7 @@ export class RemoteMprisMediaSession {
     });
     s.on('seek', (timeMs: number) => {
       console.info(`[RemoteMpris] 锁屏/播控：seek ${timeMs} → 对端`);
-      this.target?.mprisSetPosition(Math.round(timeMs));
+      this.target?.mprisMediaSetPosition(Math.round(timeMs));
     });
   }
 

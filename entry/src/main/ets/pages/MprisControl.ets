@@ -86,15 +86,21 @@ struct MprisControlPage {
       this.client.requestMprisPlayerList();
       this.client.requestSystemVolumeSinks();
     }
+    // Android positionSeekUpdateRunnable: 1s tick while playing
     this.posTimer = setInterval(() => {
       if (this.scrubbing) {
         return;
       }
-      if (this.player && this.player.isPlaying && this.player.length > 0) {
-        const elapsed = Date.now() - this.player.lastPositionTime;
-        this.seekValue = Math.min(this.player.pos + elapsed, this.player.length);
+      const p = this.player;
+      if (p && p.isPlaying && this.isSeekAllowedFor(p)) {
+        const elapsed = Date.now() - p.lastPositionTime;
+        let next = p.pos + elapsed;
+        if (p.length >= 0) {
+          next = Math.min(next, p.length);
+        }
+        this.seekValue = Math.max(0, next);
       }
-    }, 500) as number;
+    }, 1000) as number;
   }
 
   aboutToDisappear(): void {
@@ -107,11 +113,16 @@ struct MprisControlPage {
   private onPlayerUpdate(p: MprisPlayerState | null): void {
     this.player = p;
     if (p && !this.scrubbing) {
-      if (p.isPlaying && p.length > 0) {
+      // Android: position = lastPosition + elapsed when playing
+      if (p.isPlaying && this.isSeekAllowedFor(p)) {
         const elapsed = Date.now() - p.lastPositionTime;
-        this.seekValue = Math.min(p.pos + elapsed, p.length);
+        let next = p.pos + elapsed;
+        if (p.length >= 0) {
+          next = Math.min(next, p.length);
+        }
+        this.seekValue = Math.max(0, next);
       } else {
-        this.seekValue = p.pos;
+        this.seekValue = Math.max(0, p.pos);
       }
     }
     if (p) {
@@ -236,16 +247,79 @@ struct MprisControlPage {
     }
   }
 
-  private isSeekAllowed(): boolean {
-    const p = this.player;
+  /**
+   * Android MprisPlayer.isSeekAllowed:
+   * seekAllowed && length >= 0 && position >= 0
+   * → progress bar + rew/ff visible only when true (music yes, many podcasts no).
+   */
+  private isSeekAllowedFor(p: MprisPlayerState | null): boolean {
     if (!p) {
       return false;
     }
     return p.canSeek && p.length >= 0 && p.pos >= 0;
   }
 
+  private isSeekAllowed(): boolean {
+    return this.isSeekAllowedFor(this.player);
+  }
+
+  /** Android isSetVolumeAllowed: volume > -1 */
   private isSetVolumeAllowed(): boolean {
     return this.player !== null && this.player.volume > -1;
+  }
+
+  /** Android: show prev+next together if either is allowed. */
+  private showPrevNext(): boolean {
+    const p = this.player;
+    if (!p) {
+      return false;
+    }
+    return p.canGoPrevious || p.canGoNext;
+  }
+
+  private playButtonEnabled(): boolean {
+    const p = this.player;
+    if (!p) {
+      return false;
+    }
+    // Android: playing → isPauseAllowed; paused → isPlayAllowed
+    return p.isPlaying ? p.canPause : p.canPlay;
+  }
+
+  /** Android nowPlayingTextview: "title - artist" or title */
+  private nowPlayingLine(): string {
+    const p = this.player;
+    if (!p) {
+      return '';
+    }
+    let song = p.title;
+    if (p.artist.length > 0) {
+      if (song.length > 0) {
+        song = `${song} - ${p.artist}`;
+      } else {
+        song = p.artist;
+      }
+    }
+    if (song.length === 0) {
+      return p.player;
+    }
+    return song;
+  }
+
+  private loopIconTint(): ResourceColor {
+    const p = this.player;
+    if (!p || p.loopStatus === 'None' || p.loopStatus.length === 0) {
+      return UiTheme.textMuted;
+    }
+    return UiTheme.primary;
+  }
+
+  private shuffleIconTint(): ResourceColor {
+    const p = this.player;
+    if (p && p.shuffle) {
+      return UiTheme.primary;
+    }
+    return UiTheme.textMuted;
   }
 
   private albumArtSrc(): string {
@@ -522,24 +596,31 @@ struct MprisControlPage {
     }
   }
 
-  private loopLabel(): string {
-    if (!this.player) {
-      return '循环';
-    }
-    if (this.player.loopStatus === 'Track') {
-      return '单曲';
-    }
-    if (this.player.loopStatus === 'Playlist') {
-      return '列表';
-    }
-    return '循环';
-  }
-
+  /**
+   * Android MprisNowPlayingFragment.durationToProgress — supports hours.
+   */
   private fmtTime(ms: number): string {
-    const sec = Math.floor(ms / 1000);
-    const min = Math.floor(sec / 60);
-    const s = sec % 60;
-    return `${min}:${s < 10 ? '0' : ''}${s}`;
+    if (ms < 0 || !Number.isFinite(ms)) {
+      return '0:00';
+    }
+    const length = Math.floor(ms / 1000);
+    let minutes = Math.floor(length / 60);
+    const seconds = length % 60;
+    let out = '';
+    if (minutes > 60) {
+      const hours = Math.floor(minutes / 60);
+      minutes = minutes % 60;
+      out += `${hours}:`;
+      if (minutes < 10) {
+        out += '0';
+      }
+    }
+    out += `${minutes}:`;
+    if (seconds < 10) {
+      out += '0';
+    }
+    out += `${seconds}`;
+    return out;
   }
 
   @Builder
@@ -578,350 +659,386 @@ struct MprisControlPage {
     .width('100%')
   }
 
+  /**
+   * Android mpris_control: no_players TextView + player_spinner.
+   */
   @Builder
   PlayerPicker() {
     if (this.playerNames.length === 0) {
-      Text('无可用播放器')
-        .fontSize(13)
-        .fontColor(UiTheme.textMuted)
+      Text('没有已连接的播放器')
+        .fontSize(15)
+        .fontColor(UiTheme.onSurfaceVariant)
         .width('100%')
         .textAlign(TextAlign.Center)
-        .padding({ left: 24, right: 24, top: 12, bottom: 4 })
+        .padding({ left: 16, right: 16, top: 16, bottom: 8 })
     } else {
-      Row() {
-        Text('播放器')
-          .fontSize(13)
-          .fontColor(UiTheme.textMuted)
-          .margin({ right: 12 })
-        Select(this.playerSelectOptions)
-          .selected(this.selectedPlayerIndex)
-          .value(this.playerNames[this.selectedPlayerIndex] ?? '')
-          .font({ size: 14 })
-          .selectedOptionFont({ size: 14 })
-          .optionFont({ size: 14 })
-          .layoutWeight(1)
-          .onSelect((index: number) => {
-            this.selectPlayer(index);
-          })
-      }
-      .width('100%')
-      .padding({ left: 24, right: 24, top: 12, bottom: 4 })
+      Select(this.playerSelectOptions)
+        .selected(this.selectedPlayerIndex)
+        .value(this.playerNames[this.selectedPlayerIndex] ?? '')
+        .font({ size: 15 })
+        .selectedOptionFont({ size: 15 })
+        .optionFont({ size: 15 })
+        .width('100%')
+        .padding({ left: 8, right: 8, top: 8, bottom: 4 })
+        .onSelect((index: number) => {
+          this.selectPlayer(index);
+        })
     }
   }
 
+  /** Android album_art ImageView (placeholder surface when empty). */
   @Builder
   AlbumArt() {
     if (this.albumArtSrc().length > 0) {
       Image(this.albumArtSrc())
-        .width(220)
-        .height(220)
-        .borderRadius(16)
-        .objectFit(ImageFit.Cover)
-        .backgroundColor(UiTheme.surfaceVariant)
-        .margin({ top: 20, bottom: 20 })
+        .width(240)
+        .height(240)
+        .objectFit(ImageFit.Contain)
+        .margin({ top: 16, bottom: 12, left: 24, right: 24 })
     } else {
-      Column()
-        .width(220)
-        .height(220)
-        .borderRadius(16)
-        .backgroundColor(UiTheme.surfaceVariant)
-        .margin({ top: 20, bottom: 20 })
+      // Android ic_album_art_placeholder equivalent
+      Column() {
+        SymbolGlyph($r('sys.symbol.waveform'))
+          .fontSize(72)
+          .fontColor([UiTheme.outline])
+      }
+      .width(240)
+      .height(240)
+      .justifyContent(FlexAlign.Center)
+      .alignItems(HorizontalAlign.Center)
+      .backgroundColor(UiTheme.surfaceVariant)
+      .borderRadius(8)
+      .margin({ top: 16, bottom: 12, left: 24, right: 24 })
     }
   }
 
+  /**
+   * Android MprisNowPlayingFragment + mpris_control.xml — layout order & visibility:
+   * spinner → nowPlaying → [loop | play | shuffle] → [prev|rew|stop|ff|next]
+   * → progress (if isSeekAllowed) → volume (if isSetVolumeAllowed)
+   */
   @Builder
   PlayerTab() {
-    if (!this.player) {
+    Scroll() {
       Column() {
         this.PlayerPicker()
-        Column()
-          .width(80).height(80)
-          .borderRadius(40)
-          .backgroundColor(UiTheme.surfaceVariant)
-          .margin({ top: 40 })
-        Text('未在播放')
-          .fontSize(20)
-          .fontColor(UiTheme.textMuted)
-          .margin({ top: 20 })
-        Text('在电脑或手机上播放音乐后\n此处将显示播放控制')
-          .fontSize(14)
-          .fontColor(UiTheme.textMuted)
+        this.AlbumArt()
+
+        // now_playing_textview — single line marquee style
+        Text(this.nowPlayingLine().length > 0 ? this.nowPlayingLine() : ' ')
+          .fontSize(16)
+          .fontColor(UiTheme.onSurface)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.MARQUEE })
           .textAlign(TextAlign.Center)
-          .margin({ top: 8 })
-      }
-      .width('100%')
-      .layoutWeight(1)
-      .alignItems(HorizontalAlign.Center)
-    } else {
-      Scroll() {
-        Column() {
-          this.PlayerPicker()
-          this.AlbumArt()
-
-          Text(this.player.title.length > 0 ? this.player.title : this.player.player)
-            .fontSize(22)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(UiTheme.onSurface)
-            .maxLines(2)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-            .textAlign(TextAlign.Center)
-            .width('100%')
-            .padding({ left: 32, right: 32 })
-
-          Text(this.player.artist)
-            .fontSize(15)
-            .fontColor(UiTheme.textMuted)
-            .maxLines(1)
-            .textAlign(TextAlign.Center)
-            .width('100%')
-            .padding({ left: 32, right: 32 })
-            .margin({ top: 8, bottom: 20 })
-
-          if (this.isSeekAllowed() && this.player.length > 0) {
-            Column() {
-              Slider({
-                value: this.seekValue,
-                min: 0,
-                max: this.player.length,
-                step: 1000
-              })
-                .blockColor(UiTheme.primary)
-                .trackColor('#22000000')
-                .selectedColor(UiTheme.primary)
-                .trackThickness(3)
-                .blockSize({ width: 14, height: 14 })
-                .width('100%')
-                .onChange((value: number, mode: SliderChangeMode) => {
-                  if (mode === SliderChangeMode.Begin) {
-                    this.scrubbing = true;
-                  }
-                  this.seekValue = value;
-                  if (mode === SliderChangeMode.End || mode === SliderChangeMode.Click) {
-                    this.scrubbing = false;
-                    this.callSetPosition(Math.round(value));
-                  }
-                })
-
-              Row() {
-                Text(this.fmtTime(this.seekValue))
-                  .fontSize(12)
-                  .fontColor(UiTheme.textMuted)
-                Blank()
-                Text(this.fmtTime(this.player.length))
-                  .fontSize(12)
-                  .fontColor(UiTheme.textMuted)
-              }
-              .width('100%')
-            }
-            .width('100%')
-            .padding({ left: 24, right: 24 })
-            .margin({ bottom: 20 })
-          }
-
-          // rew / prev / play / next / ff
-          Row({ space: 10 }) {
-            if (this.isSeekAllowed()) {
-              Column() {
-                Button({ type: ButtonType.Circle, stateEffect: true }) {
-                  Text('«')
-                    .fontSize(18)
-                    .fontColor(UiTheme.onSurface)
-                }
-                .width(40).height(40)
-                .backgroundColor(UiTheme.surfaceVariant)
-                .onClick(() => { this.callSeek(-MPRIS_DEFAULT_SEEK_US); })
-                Text('快退')
-                  .fontSize(10)
-                  .fontColor(UiTheme.textMuted)
-                  .margin({ top: 4 })
-              }
-              .alignItems(HorizontalAlign.Center)
-            }
-
-            if (this.player.canGoPrevious || this.player.canGoNext) {
-              Column() {
-                Button({ type: ButtonType.Circle, stateEffect: true }) {
-                  SymbolGlyph($r('sys.symbol.chevron_left'))
-                    .fontSize(20)
-                    .fontColor([UiTheme.onSurface])
-                }
-                .width(44).height(44)
-                .backgroundColor(UiTheme.surfaceVariant)
-                .enabled(this.player.canGoPrevious)
-                .opacity(this.player.canGoPrevious ? 1 : 0.4)
-                .onClick(() => { this.callPrevious(); })
-                Text('上一首')
-                  .fontSize(10)
-                  .fontColor(UiTheme.textMuted)
-                  .margin({ top: 4 })
-              }
-              .alignItems(HorizontalAlign.Center)
-            }
-
-            Column() {
-              Button({ type: ButtonType.Circle, stateEffect: true }) {
-                SymbolGlyph(this.player.isPlaying ? $r('sys.symbol.pause') : $r('sys.symbol.play'))
-                  .fontSize(28)
-                  .fontColor([Color.White])
-              }
-              .width(64).height(64)
-              .backgroundColor(UiTheme.primary)
-              .enabled(this.player.isPlaying ? this.player.canPause : this.player.canPlay)
-              .onClick(() => { this.callPlayPause(); })
-              Text(this.player.isPlaying ? '暂停' : '播放')
-                .fontSize(11)
-                .fontColor(UiTheme.textMuted)
-                .margin({ top: 4 })
-            }
-            .alignItems(HorizontalAlign.Center)
-
-            if (this.player.canGoPrevious || this.player.canGoNext) {
-              Column() {
-                Button({ type: ButtonType.Circle, stateEffect: true }) {
-                  SymbolGlyph($r('sys.symbol.chevron_right'))
-                    .fontSize(20)
-                    .fontColor([UiTheme.onSurface])
-                }
-                .width(44).height(44)
-                .backgroundColor(UiTheme.surfaceVariant)
-                .enabled(this.player.canGoNext)
-                .opacity(this.player.canGoNext ? 1 : 0.4)
-                .onClick(() => { this.callNext(); })
-                Text('下一首')
-                  .fontSize(10)
-                  .fontColor(UiTheme.textMuted)
-                  .margin({ top: 4 })
-              }
-              .alignItems(HorizontalAlign.Center)
-            }
-
-            if (this.isSeekAllowed()) {
-              Column() {
-                Button({ type: ButtonType.Circle, stateEffect: true }) {
-                  Text('»')
-                    .fontSize(18)
-                    .fontColor(UiTheme.onSurface)
-                }
-                .width(40).height(40)
-                .backgroundColor(UiTheme.surfaceVariant)
-                .onClick(() => { this.callSeek(MPRIS_DEFAULT_SEEK_US); })
-                Text('快进')
-                  .fontSize(10)
-                  .fontColor(UiTheme.textMuted)
-                  .margin({ top: 4 })
-              }
-              .alignItems(HorizontalAlign.Center)
-            }
-          }
-          .justifyContent(FlexAlign.Center)
           .width('100%')
-          .margin({ bottom: 16 })
+          .padding({ left: 16, right: 16, top: 4, bottom: 12 })
 
-          // Stop + loop + shuffle
-          Row({ space: 20 }) {
-            Column() {
+        // Primary: loop | play | shuffle — 3 equal columns, play always center
+        Row() {
+          Column() {
+            if (this.player !== null && this.player.loopStatusAllowed) {
               Button({ type: ButtonType.Circle, stateEffect: true }) {
-                Text('■')
-                  .fontSize(14)
-                  .fontColor(UiTheme.onSurface)
+                SymbolGlyph($r('sys.symbol.repeat'))
+                  .fontSize(22)
+                  .fontColor([this.loopIconTint()])
               }
-              .width(40).height(40)
-              .backgroundColor(UiTheme.surfaceVariant)
-              .onClick(() => { this.callStop(); })
-              Text('停止')
-                .fontSize(10)
-                .fontColor(UiTheme.textMuted)
-                .margin({ top: 4 })
-            }
-            .alignItems(HorizontalAlign.Center)
-
-            if (this.player.shuffleAllowed) {
-              Column() {
-                Button({ type: ButtonType.Circle, stateEffect: true }) {
-                  SymbolGlyph($r('sys.symbol.shuffle'))
-                    .fontSize(18)
-                    .fontColor([this.player.shuffle ? UiTheme.primary : UiTheme.textMuted])
-                }
-                .width(40).height(40)
-                .backgroundColor(UiTheme.surfaceVariant)
-                .onClick(() => { this.callToggleShuffle(); })
-                Text('随机')
-                  .fontSize(10)
-                  .fontColor(UiTheme.textMuted)
-                  .margin({ top: 4 })
-              }
-              .alignItems(HorizontalAlign.Center)
-            }
-
-            if (this.player.loopStatusAllowed) {
-              Column() {
-                Button({ type: ButtonType.Circle, stateEffect: true }) {
-                  SymbolGlyph($r('sys.symbol.repeat'))
-                    .fontSize(18)
-                    .fontColor([
-                      this.player.loopStatus !== 'None' && this.player.loopStatus.length > 0
-                        ? UiTheme.primary : UiTheme.textMuted
-                    ])
-                }
-                .width(40).height(40)
-                .backgroundColor(UiTheme.surfaceVariant)
-                .onClick(() => { this.callToggleLoop(); })
-                Text(this.loopLabel())
-                  .fontSize(10)
-                  .fontColor(UiTheme.textMuted)
-                  .margin({ top: 4 })
-              }
-              .alignItems(HorizontalAlign.Center)
-            }
-          }
-          .justifyContent(FlexAlign.Center)
-          .width('100%')
-          .margin({ bottom: 24 })
-
-          if (this.isSetVolumeAllowed()) {
-            Text(`播放器音量  ${this.player.volume}%`)
-              .fontSize(13)
-              .fontColor(UiTheme.textMuted)
-              .margin({ bottom: 10 })
-
-            Row({ space: 8 }) {
-              SymbolGlyph($r('sys.symbol.speaker'))
-                .fontSize(16)
-                .fontColor([UiTheme.textMuted])
-
-              Slider({
-                value: this.player.volume,
-                min: 0,
-                max: 100,
-                step: 1
+              .width(56)
+              .height(56)
+              .backgroundColor(Color.Transparent)
+              .onClick(() => {
+                this.callToggleLoop();
               })
-                .blockColor(UiTheme.primary)
-                .trackColor('#22000000')
-                .selectedColor(UiTheme.primary)
-                .trackThickness(3)
-                .blockSize({ width: 14, height: 14 })
-                .layoutWeight(1)
-                .onChange((value: number) => {
-                  this.callSetVolume(Math.round(value));
-                })
-
-              SymbolGlyph($r('sys.symbol.speaker_wave_3'))
-                .fontSize(18)
-                .fontColor([UiTheme.textMuted])
             }
-            .width('90%')
-            .justifyContent(FlexAlign.Center)
           }
+          .layoutWeight(1)
+          .height(80)
+          .justifyContent(FlexAlign.Center)
+          .alignItems(HorizontalAlign.Center)
 
-          Column().height(this.navBarHeight + 24)
+          Column() {
+            Button({ type: ButtonType.Circle, stateEffect: true }) {
+              SymbolGlyph(
+                this.player !== null && this.player.isPlaying
+                  ? $r('sys.symbol.pause')
+                  : $r('sys.symbol.play')
+              )
+                .fontSize(36)
+                .fontColor([
+                  this.playButtonEnabled() ? UiTheme.onSurface : UiTheme.outline
+                ])
+            }
+            .width(72)
+            .height(72)
+            .backgroundColor(Color.Transparent)
+            .enabled(this.playButtonEnabled())
+            .opacity(this.playButtonEnabled() ? 1 : 0.35)
+            .onClick(() => {
+              this.callPlayPause();
+            })
+          }
+          .layoutWeight(1)
+          .height(80)
+          .justifyContent(FlexAlign.Center)
+          .alignItems(HorizontalAlign.Center)
+
+          Column() {
+            if (this.player !== null && this.player.shuffleAllowed) {
+              Button({ type: ButtonType.Circle, stateEffect: true }) {
+                SymbolGlyph($r('sys.symbol.shuffle'))
+                  .fontSize(22)
+                  .fontColor([this.shuffleIconTint()])
+              }
+              .width(56)
+              .height(56)
+              .backgroundColor(Color.Transparent)
+              .onClick(() => {
+                this.callToggleShuffle();
+              })
+            }
+          }
+          .layoutWeight(1)
+          .height(80)
+          .justifyContent(FlexAlign.Center)
+          .alignItems(HorizontalAlign.Center)
         }
         .width('100%')
-        .alignItems(HorizontalAlign.Center)
+        .height(80)
+        .padding({ left: 8, right: 8 })
+        .justifyContent(FlexAlign.Center)
+        .alignItems(VerticalAlign.Center)
+
+        // Secondary: prev | rew | stop | ff | next — always 5 equal slots so
+        // hidden pairs leave mirrored blanks and the row stays centered.
+        Row() {
+          // prev (mirror of next)
+          if (this.showPrevNext()) {
+            Column() {
+              Button({ type: ButtonType.Circle, stateEffect: true }) {
+                SymbolGlyph($r('sys.symbol.chevron_left'))
+                  .fontSize(24)
+                  .fontColor([
+                    this.player !== null && this.player.canGoPrevious
+                      ? UiTheme.onSurface : UiTheme.outline
+                  ])
+              }
+              .width(48)
+              .height(48)
+              .backgroundColor(Color.Transparent)
+              .enabled(this.player !== null && this.player.canGoPrevious)
+              .opacity(this.player !== null && this.player.canGoPrevious ? 1 : 0.35)
+              .onClick(() => {
+                this.callPrevious();
+              })
+            }
+            .layoutWeight(1)
+            .height(56)
+            .justifyContent(FlexAlign.Center)
+            .alignItems(HorizontalAlign.Center)
+          } else {
+            Column().layoutWeight(1).height(56)
+          }
+
+          // rew (mirror of ff)
+          if (this.isSeekAllowed()) {
+            Column() {
+              Button({ type: ButtonType.Circle, stateEffect: true }) {
+                Text('«')
+                  .fontSize(22)
+                  .fontWeight(FontWeight.Medium)
+                  .fontColor(UiTheme.onSurface)
+              }
+              .width(48)
+              .height(48)
+              .backgroundColor(Color.Transparent)
+              .onClick(() => {
+                this.callSeek(-MPRIS_DEFAULT_SEEK_US);
+              })
+            }
+            .layoutWeight(1)
+            .height(56)
+            .justifyContent(FlexAlign.Center)
+            .alignItems(HorizontalAlign.Center)
+          } else {
+            Column().layoutWeight(1).height(56)
+          }
+
+          // stop — always center slot
+          Column() {
+            Button({ type: ButtonType.Circle, stateEffect: true }) {
+              Text('■')
+                .fontSize(16)
+                .fontColor(this.player !== null ? UiTheme.onSurface : UiTheme.outline)
+            }
+            .width(48)
+            .height(48)
+            .backgroundColor(Color.Transparent)
+            .enabled(this.player !== null)
+            .opacity(this.player !== null ? 1 : 0.35)
+            .onClick(() => {
+              this.callStop();
+            })
+          }
+          .layoutWeight(1)
+          .height(56)
+          .justifyContent(FlexAlign.Center)
+          .alignItems(HorizontalAlign.Center)
+
+          // ff
+          if (this.isSeekAllowed()) {
+            Column() {
+              Button({ type: ButtonType.Circle, stateEffect: true }) {
+                Text('»')
+                  .fontSize(22)
+                  .fontWeight(FontWeight.Medium)
+                  .fontColor(UiTheme.onSurface)
+              }
+              .width(48)
+              .height(48)
+              .backgroundColor(Color.Transparent)
+              .onClick(() => {
+                this.callSeek(MPRIS_DEFAULT_SEEK_US);
+              })
+            }
+            .layoutWeight(1)
+            .height(56)
+            .justifyContent(FlexAlign.Center)
+            .alignItems(HorizontalAlign.Center)
+          } else {
+            Column().layoutWeight(1).height(56)
+          }
+
+          // next
+          if (this.showPrevNext()) {
+            Column() {
+              Button({ type: ButtonType.Circle, stateEffect: true }) {
+                SymbolGlyph($r('sys.symbol.chevron_right'))
+                  .fontSize(24)
+                  .fontColor([
+                    this.player !== null && this.player.canGoNext
+                      ? UiTheme.onSurface : UiTheme.outline
+                  ])
+              }
+              .width(48)
+              .height(48)
+              .backgroundColor(Color.Transparent)
+              .enabled(this.player !== null && this.player.canGoNext)
+              .opacity(this.player !== null && this.player.canGoNext ? 1 : 0.35)
+              .onClick(() => {
+                this.callNext();
+              })
+            }
+            .layoutWeight(1)
+            .height(56)
+            .justifyContent(FlexAlign.Center)
+            .alignItems(HorizontalAlign.Center)
+          } else {
+            Column().layoutWeight(1).height(56)
+          }
+        }
+        .width('100%')
+        .height(60)
+        .padding({ left: 8, right: 8 })
+        .margin({ bottom: 8 })
+        .justifyContent(FlexAlign.Center)
+        .alignItems(VerticalAlign.Center)
+
+        // progress_slider — GONE when !isSeekAllowed (podcast often hidden)
+        if (this.isSeekAllowed() && this.player !== null) {
+          Row() {
+            Text(this.fmtTime(this.seekValue))
+              .fontSize(14)
+              .fontColor(UiTheme.onSurface)
+              .width(52)
+              .textAlign(TextAlign.Center)
+
+            Slider({
+              value: this.seekValue,
+              min: 0,
+              max: this.player.length >= 0 ? Math.max(this.player.length, 1) : 1,
+              step: 500
+            })
+              .blockColor(UiTheme.primary)
+              .trackColor('#22000000')
+              .selectedColor(UiTheme.primary)
+              .trackThickness(3)
+              .blockSize({ width: 14, height: 14 })
+              .layoutWeight(1)
+              .onChange((value: number, mode: SliderChangeMode) => {
+                // Android: update label while dragging; SetPosition on stop
+                if (mode === SliderChangeMode.Begin) {
+                  this.scrubbing = true;
+                }
+                this.seekValue = value;
+                if (mode === SliderChangeMode.End || mode === SliderChangeMode.Click) {
+                  this.scrubbing = false;
+                  this.callSetPosition(Math.round(value));
+                }
+              })
+
+            Text(this.fmtTime(this.player.length >= 0 ? this.player.length : 0))
+              .fontSize(14)
+              .fontColor(UiTheme.onSurface)
+              .width(52)
+              .textAlign(TextAlign.Center)
+          }
+          .width('100%')
+          .padding({ left: 8, right: 8 })
+          .margin({ top: 4, bottom: 8 })
+        }
+
+        // volume_layout — GONE when !isSetVolumeAllowed
+        if (this.isSetVolumeAllowed() && this.player !== null) {
+          Row({ space: 10 }) {
+            SymbolGlyph($r('sys.symbol.speaker_wave_2'))
+              .fontSize(22)
+              .fontColor([UiTheme.onSurfaceVariant])
+              .width(30)
+              .height(30)
+
+            Slider({
+              value: this.player.volume,
+              min: 0,
+              max: 100,
+              step: 1
+            })
+              .blockColor(UiTheme.primary)
+              .trackColor('#22000000')
+              .selectedColor(UiTheme.primary)
+              .trackThickness(3)
+              .blockSize({ width: 14, height: 14 })
+              .layoutWeight(1)
+              .onChange((value: number, mode: SliderChangeMode) => {
+                // Android volumeSeek: send on every user progress change
+                if (mode === SliderChangeMode.Moving || mode === SliderChangeMode.End ||
+                  mode === SliderChangeMode.Click) {
+                  this.callSetVolume(Math.round(value));
+                }
+              })
+          }
+          .width('100%')
+          .padding({ left: 16, right: 16 })
+          .margin({ top: 8 })
+        }
+
+        if (this.playerNames.length === 0) {
+          Text('在对端设备上播放音乐后，此处将显示播放控制')
+            .fontSize(13)
+            .fontColor(UiTheme.textMuted)
+            .textAlign(TextAlign.Center)
+            .width('100%')
+            .padding({ left: 32, right: 32, top: 24 })
+        }
+
+        Column().height(this.navBarHeight + 24)
       }
-      .layoutWeight(1)
-      .scrollBar(BarState.Off)
-      .align(Alignment.Top)
+      .width('100%')
+      .alignItems(HorizontalAlign.Center)
+      .justifyContent(FlexAlign.Center)
     }
+    .layoutWeight(1)
+    .scrollBar(BarState.Off)
+    .align(Alignment.Top)
   }
 
   @Builder
