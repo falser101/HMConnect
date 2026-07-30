@@ -25,6 +25,10 @@ export const MY_DEVICE_ID: string = 'a1b2c3d4e5f6789012345678abcdef01';
 export const PACKET_TYPE_MPRIS: string = 'kdeconnect.mpris';
 export const PACKET_TYPE_MPRIS_REQUEST: string = 'kdeconnect.mpris.request';
 
+/** Receive notifications from peer (Android ReceiveNotificationsPlugin). */
+export const PACKET_TYPE_NOTIFICATION: string = 'kdeconnect.notification';
+export const PACKET_TYPE_NOTIFICATION_REQUEST: string = 'kdeconnect.notification.request';
+
 /** Packets this device can receive. */
 export const INCOMING_CAPABILITIES: string[] = [
   'kdeconnect.clipboard',
@@ -35,7 +39,9 @@ export const INCOMING_CAPABILITIES: string[] = [
   'kdeconnect.findmyphone.request',
   'kdeconnect.share.request',
   'kdeconnect.mpris',
-  'kdeconnect.mpris.request'
+  'kdeconnect.mpris.request',
+  // Receive peer notifications (stage A — send side not yet implemented)
+  PACKET_TYPE_NOTIFICATION
 ];
 
 /** Packets this device can send. */
@@ -47,7 +53,8 @@ export const OUTGOING_CAPABILITIES: string[] = [
   'kdeconnect.battery',
   'kdeconnect.share.request',
   'kdeconnect.mpris',
-  'kdeconnect.mpris.request'
+  'kdeconnect.mpris.request',
+  PACKET_TYPE_NOTIFICATION_REQUEST
 ];
 
 /** @deprecated use INCOMING/OUTGOING; kept for any leftover imports. */
@@ -157,6 +164,31 @@ export interface FileSendInfo {
 /** Payload transfer metadata sent in the JSON packet (Android: payloadTransferInfo). */
 export interface PayloadTransferInfo {
   port: number;
+}
+
+/**
+ * kdeconnect.notification body (Android NotificationsPlugin → ReceiveNotificationsPlugin).
+ * Cancel packets may only set id + isCancel.
+ */
+export interface KdeNotificationBody {
+  id?: string;
+  appName?: string;
+  ticker?: string;
+  title?: string;
+  text?: string;
+  time?: string;
+  silent?: boolean;
+  isCancel?: boolean;
+  isClearable?: boolean;
+  /** Present on request packets when embedded in notification.request. */
+  request?: boolean;
+  cancel?: string;
+}
+
+/** kdeconnect.notification.request body. */
+export interface KdeNotificationRequestBody {
+  request?: boolean;
+  cancel?: string;
 }
 
 /** kdeconnect.battery body (phone ↔ desktop). */

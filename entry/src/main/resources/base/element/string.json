@@ -353,6 +353,14 @@
       "value": "让设备响铃以便查找，或响铃远程设备"
     },
     {
+      "name": "pref_plugin_receive_notifications",
+      "value": "接收通知"
+    },
+    {
+      "name": "pref_plugin_receive_notifications_desc",
+      "value": "接收其他设备的通知并在本机显示"
+    },
+    {
       "name": "plugin_disabled_toast",
       "value": "该插件已对此设备关闭"
     },

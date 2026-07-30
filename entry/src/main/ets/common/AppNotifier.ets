@@ -578,4 +578,106 @@ export class AppNotifier {
       // ignore
     }
   }
+
+  /**
+   * Mirrored peer notification id range (10000–19999).
+   * Android uses tag "kdeconnectId:{id}" + int id; Harmony only has numeric id.
+   */
+  private static readonly MIRROR_NOTIFY_BASE: number = 10000;
+  private static readonly MIRROR_NOTIFY_SPAN: number = 10000;
+  /** remote notification id → local notify id (for cancel). */
+  private mirroredIds: Map<string, number> = new Map();
+
+  /**
+   * Stable local id for a remote kdeconnect.notification id string.
+   * Marks as mirrored so a future send-plugin can skip re-export (local-only).
+   */
+  public static remoteNotificationIdToLocal(remoteId: string): number {
+    let h = 0;
+    for (let i = 0; i < remoteId.length; i++) {
+      h = ((h << 5) - h) + remoteId.charCodeAt(i);
+      h = h | 0;
+    }
+    const abs = h < 0 ? -h : h;
+    return AppNotifier.MIRROR_NOTIFY_BASE + (abs % AppNotifier.MIRROR_NOTIFY_SPAN);
+  }
+
+  /**
+   * Show a notification mirrored from a peer device
+   * (Android ReceiveNotificationsPlugin.onPacketReceived).
+   * Same remote id replaces the previous banner.
+   */
+  public async notifyMirroredNotification(
+    remoteId: string,
+    appName: string,
+    ticker: string,
+    peerDeviceName?: string
+  ): Promise<void> {
+    if (!remoteId || remoteId.length === 0) {
+      return;
+    }
+    let ok = await this.ensureEnabled();
+    if (!ok) {
+      console.warn('[Notify] notifications disabled; skip mirrored notification');
+      return;
+    }
+    const title = appName && appName.length > 0 ? appName : '通知';
+    let text = ticker && ticker.length > 0 ? ticker : '';
+    if (peerDeviceName && peerDeviceName.length > 0 && text.length > 0) {
+      // Keep ticker primary; peer name only if empty body
+    } else if (peerDeviceName && peerDeviceName.length > 0 && text.length === 0) {
+      text = `来自 ${peerDeviceName}`;
+    }
+    const id = AppNotifier.remoteNotificationIdToLocal(remoteId);
+    this.mirroredIds.set(remoteId, id);
+    const agent = await this.buildOpenAppAgent(id, 'mirrored_notification');
+    const request: notificationManager.NotificationRequest = {
+      id: id,
+      notificationSlotType: notificationManager.SlotType.SOCIAL_COMMUNICATION,
+      content: {
+        notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
+        normal: {
+          title: title,
+          text: text
+        }
+      },
+      tapDismissed: true
+    };
+    if (agent) {
+      request.wantAgent = agent;
+    }
+    try {
+      await notificationManager.publish(request);
+      console.info(
+        `[Notify] mirrored notification published id=${id} remoteId=${remoteId} app=${title}`
+      );
+    } catch (e) {
+      let err = e as BusinessError;
+      console.error(`[Notify] mirrored publish failed: code=${err.code} ${err.message}`);
+    }
+  }
+
+  /** Cancel a mirrored notification by peer remote id (isCancel / dismiss). */
+  public async cancelMirroredNotification(remoteId: string): Promise<void> {
+    if (!remoteId || remoteId.length === 0) {
+      return;
+    }
+    let id = this.mirroredIds.get(remoteId);
+    if (id === undefined) {
+      id = AppNotifier.remoteNotificationIdToLocal(remoteId);
+    }
+    this.mirroredIds.delete(remoteId);
+    try {
+      await notificationManager.cancel(id);
+      console.info(`[Notify] mirrored notification cancelled remoteId=${remoteId} id=${id}`);
+    } catch (_e) {
+      // already gone
+    }
+  }
+
+  /** Whether this local notify id is in the mirrored range (for future send-plugin). */
+  public static isMirroredLocalNotifyId(localId: number): boolean {
+    return localId >= AppNotifier.MIRROR_NOTIFY_BASE &&
+      localId < AppNotifier.MIRROR_NOTIFY_BASE + AppNotifier.MIRROR_NOTIFY_SPAN;
+  }
 }

@@ -10,6 +10,7 @@ import {
   PLUGIN_FIND_MY_PHONE,
   PLUGIN_MPRIS,
   PLUGIN_PING,
+  PLUGIN_RECEIVE_NOTIFICATIONS,
   PLUGIN_SHARE,
   PluginMeta,
   isPluginSupportedByPeer
@@ -100,6 +101,9 @@ struct PluginSettings {
     if (key === PLUGIN_FIND_MY_PHONE) {
       return $r('app.string.pref_plugin_findmyphone');
     }
+    if (key === PLUGIN_RECEIVE_NOTIFICATIONS) {
+      return $r('app.string.pref_plugin_receive_notifications');
+    }
     return $r('app.string.menu_plugin_settings');
   }
 
@@ -121,6 +125,9 @@ struct PluginSettings {
     }
     if (key === PLUGIN_FIND_MY_PHONE) {
       return $r('app.string.pref_plugin_findmyphone_desc');
+    }
+    if (key === PLUGIN_RECEIVE_NOTIFICATIONS) {
+      return $r('app.string.pref_plugin_receive_notifications_desc');
     }
     return $r('app.string.pref_plugin_clipboard_desc');
   }
@@ -157,6 +164,13 @@ struct PluginSettings {
   private onToggle(key: string, value: boolean): void {
     PluginSettingsStore.getInstance().setEnabled(this.deviceId, key, value).then(() => {
       this.reloadRows();
+      // Android: enabling ReceiveNotificationsPlugin recreates it → onCreate request
+      if (value && key === PLUGIN_RECEIVE_NOTIFICATIONS && this.deviceId.length > 0) {
+        const s = this.session.getService().getClientForDevice(this.deviceId);
+        if (s) {
+          s.requestPeerNotifications();
+        }
+      }
     });
   }
 

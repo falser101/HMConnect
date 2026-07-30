@@ -313,6 +313,14 @@
       "value": "Ring this device to find it, or ring the remote device"
     },
     {
+      "name": "pref_plugin_receive_notifications",
+      "value": "Receive notifications"
+    },
+    {
+      "name": "pref_plugin_receive_notifications_desc",
+      "value": "Receive notifications from other devices and display them on this device"
+    },
+    {
       "name": "plugin_disabled_toast",
       "value": "This plugin is disabled for this device"
     },

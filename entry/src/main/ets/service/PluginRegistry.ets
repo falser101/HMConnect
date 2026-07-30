@@ -11,6 +11,8 @@ export const PLUGIN_MPRIS: string = 'mpris';
 export const PLUGIN_PING: string = 'ping';
 export const PLUGIN_BATTERY: string = 'battery';
 export const PLUGIN_FIND_MY_PHONE: string = 'findmyphone';
+/** Receive peer notifications (Android ReceiveNotificationsPlugin). Default off. */
+export const PLUGIN_RECEIVE_NOTIFICATIONS: string = 'receivenotifications';
 
 export interface PluginMeta {
   key: string;
@@ -59,6 +61,13 @@ export const IMPLEMENTED_PLUGINS: PluginMeta[] = [
     // Local device can be found (incoming) and can ring remote (outgoing)
     incomingTypes: ['kdeconnect.findmyphone.request'],
     outgoingTypes: ['kdeconnect.findmyphone.request']
+  },
+  {
+    // Android ReceiveNotificationsPlugin — default off
+    key: PLUGIN_RECEIVE_NOTIFICATIONS,
+    enabledByDefault: false,
+    incomingTypes: ['kdeconnect.notification'],
+    outgoingTypes: ['kdeconnect.notification.request']
   }
 ];
 

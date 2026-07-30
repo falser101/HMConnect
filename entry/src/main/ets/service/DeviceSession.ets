@@ -29,6 +29,10 @@ import {
   PACKET_TYPE_SHARE_REQUEST,
   PACKET_TYPE_MPRIS,
   PACKET_TYPE_MPRIS_REQUEST,
+  PACKET_TYPE_NOTIFICATION,
+  PACKET_TYPE_NOTIFICATION_REQUEST,
+  KdeNotificationBody,
+  KdeNotificationRequestBody,
   MprisPlayerState,
   sanitizeDeviceName,
   serializePacket,
@@ -43,6 +47,7 @@ import {
   PLUGIN_FIND_MY_PHONE,
   PLUGIN_MPRIS,
   PLUGIN_PING,
+  PLUGIN_RECEIVE_NOTIFICATIONS,
   PLUGIN_SHARE,
   pluginKeyForPacketType
 } from './PluginRegistry';
@@ -410,6 +415,8 @@ export class DeviceSession {
         peerDeviceId: peer.deviceId
       });
       console.info('[KDE-MVP] Trusted device, skip pair request');
+      // Android ReceiveNotificationsPlugin.onCreate → request existing notifications
+      this.requestPeerNotifications();
       return;
     }
     this.emit('connected', '已加密连接', {
@@ -1794,6 +1801,7 @@ export class DeviceSession {
             peerName: this.peerDevice?.deviceName,
             peerDeviceId: this.peerDevice?.deviceId
           });
+          this.requestPeerNotifications();
         } else if (this.pairRequestedByPeer) {
           // Android: ignore second pairing request before timeout
           console.warn('[KDE-MVP] Ignoring second pairing request before timeout');
@@ -1956,6 +1964,74 @@ export class DeviceSession {
       this.handleIncomingShareRequest(packet);
       return;
     }
+
+    if (type === PACKET_TYPE_NOTIFICATION) {
+      this.handleIncomingNotification(body as KdeNotificationBody);
+      return;
+    }
+
+    if (type === PACKET_TYPE_NOTIFICATION_REQUEST) {
+      // Receive-only stage: we do not send our notifications yet.
+      // Ignore request/cancel from peer aimed at a send plugin.
+      console.info('[KDE-MVP] notification.request ignored (send plugin not implemented)');
+      return;
+    }
+  }
+
+  /**
+   * Android ReceiveNotificationsPlugin.onPacketReceived:
+   * require ticker + appName + id; skip silent; isCancel → dismiss local.
+   */
+  private handleIncomingNotification(body: KdeNotificationBody): void {
+    if (!body) {
+      return;
+    }
+    const remoteId = body.id !== undefined && body.id !== null ? String(body.id) : '';
+    if (body.isCancel === true) {
+      if (remoteId.length > 0) {
+        AppNotifier.getInstance().cancelMirroredNotification(remoteId).catch((e: Error) => {
+          console.error('[KDE-MVP] cancel mirrored failed:', e.message);
+        });
+      }
+      return;
+    }
+    if (body.silent === true) {
+      // Pre-existing notifications after request — Android skips display
+      console.info(`[KDE-MVP] silent notification skipped id=${remoteId}`);
+      return;
+    }
+    if (!body.ticker || !body.appName || remoteId.length === 0) {
+      console.warn('[KDE-MVP] notification packet lacks ticker/appName/id');
+      return;
+    }
+    const peerName = this.peerDevice?.deviceName ?? '';
+    AppNotifier.getInstance()
+      .notifyMirroredNotification(remoteId, String(body.appName), String(body.ticker), peerName)
+      .catch((e: Error) => {
+        console.error('[KDE-MVP] mirrored notify failed:', e.message);
+      });
+  }
+
+  /**
+   * Ask peer to push active notifications (Android ReceiveNotificationsPlugin.onCreate).
+   * Peer responds with silent=true packets for existing + live ones after.
+   */
+  public requestPeerNotifications(): void {
+    if (!this.isPluginEnabled(PLUGIN_RECEIVE_NOTIFICATIONS)) {
+      return;
+    }
+    if (!this.isTlsLive() || !this.sessionLive) {
+      return;
+    }
+    const body: KdeNotificationRequestBody = { request: true };
+    const json: string = serializePacket(PACKET_TYPE_NOTIFICATION_REQUEST, body);
+    this.sendTls(json, (err) => {
+      if (err) {
+        console.error('[KDE-MVP] notification.request send failed:', JSON.stringify(err));
+      } else {
+        console.info('[KDE-MVP] notification.request sent (sync peer notifications)');
+      }
+    });
   }
 
   /**
@@ -2388,6 +2464,7 @@ export class DeviceSession {
       peerName: this.peerDevice?.deviceName,
       peerDeviceId: this.peerDevice?.deviceId
     });
+    this.requestPeerNotifications();
   }
 
   /** Reject incoming pair request (from notification action). */
