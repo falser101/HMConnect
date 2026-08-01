@@ -6,6 +6,8 @@ import { KdeStatus, KdeDigitizerEventBody } from '../service/KdeTypes';
 import { goBack, routeParams, hostContext } from '../common/NavUtil';
 import { UiTheme, cssColor } from '../common/ui/UiTheme';
 import { KdeTopBar } from '../common/ui/KdeWidgets';
+import { KdeIcon, KdeIconRes } from '../common/ui/KdeIcons';
+import { PluginPrefsStore } from '../store/PluginPrefsStore';
 
 interface DigitizerRouteParams {
   deviceId: string;
@@ -31,6 +33,9 @@ struct DigitizerPage {
   @State connected: boolean = false;
   @State connecting: boolean = false;
   @State tool: string = TOOL_PEN;
+  @State drawHeld: boolean = false;
+  @State hideDrawButton: boolean = false;
+  @State drawButtonSide: string = 'bottom_left';
   private deviceId: string = '';
   private session: AppSession = AppSession.getInstance();
   private client: DeviceSession | null = null;
@@ -54,6 +59,13 @@ struct DigitizerPage {
     const params = routeParams(this.getUIContext()) as DigitizerRouteParams;
     if (params && params.deviceId) {
       this.deviceId = params.deviceId;
+      if (this.ctxRef) {
+        PluginPrefsStore.getInstance().ensureInit(this.ctxRef).then(() => {
+          const store = PluginPrefsStore.getInstance();
+          this.hideDrawButton = store.getDigitizerHideDrawButton(this.deviceId);
+          this.drawButtonSide = store.getDigitizerDrawButtonSide(this.deviceId);
+        });
+      }
     }
     this.wireSession();
     this.ensureStatusSubscription();
@@ -180,6 +192,10 @@ struct DigitizerPage {
   }
 
   private handleTouch(event: TouchEvent): void {
+    // Android DigitizerActivity: finger drawing requires holding the draw button
+    if (!this.hideDrawButton && !this.drawHeld) {
+      return;
+    }
     if (event.touches.length === 0) {
       return;
     }
@@ -205,6 +221,19 @@ struct DigitizerPage {
 
   private showToast(msg: ResourceStr): void {
     this.getUIContext().getPromptAction().showToast({ message: msg, duration: 1500 });
+  }
+
+  private drawButtonAlignment(): Alignment {
+    if (this.drawButtonSide === 'top_left') {
+      return Alignment.TopStart;
+    }
+    if (this.drawButtonSide === 'top_right') {
+      return Alignment.TopEnd;
+    }
+    if (this.drawButtonSide === 'bottom_right') {
+      return Alignment.BottomEnd;
+    }
+    return Alignment.BottomStart;
   }
 
   @Builder
@@ -250,6 +279,27 @@ struct DigitizerPage {
           .onTouch((event: TouchEvent) => {
             this.handleTouch(event);
           })
+
+        if (!this.hideDrawButton) {
+          Column() {
+            KdeIcon({ symbol: KdeIconRes.draw(), iconSize: 26, color: this.drawHeld ? UiTheme.onPrimary : UiTheme.onSurface })
+          }
+          .width(64)
+          .height(64)
+          .justifyContent(FlexAlign.Center)
+          .borderRadius(32)
+          .backgroundColor(this.drawHeld ? UiTheme.primary : UiTheme.cardElevated)
+          .shadow({ radius: 8, color: UiTheme.scrim, offsetX: 0, offsetY: 4 })
+          .align(this.drawButtonAlignment())
+          .margin(16)
+          .onTouch((event: TouchEvent) => {
+            if (event.type === TouchType.Down) {
+              this.drawHeld = true;
+            } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+              this.drawHeld = false;
+            }
+          })
+        }
       }
       .layoutWeight(1)
       .width('100%')

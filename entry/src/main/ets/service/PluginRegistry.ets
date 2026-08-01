@@ -22,6 +22,8 @@ export const PLUGIN_RECEIVE_NOTIFICATIONS: string = 'receivenotifications';
 export const PLUGIN_REMOTE_INPUT: string = 'remoteinput';
 /** Run preset commands on the desktop (Android RunCommandPlugin). */
 export const PLUGIN_RUNCOMMAND: string = 'runcommand';
+/** Drawing tablet (Android DigitizerPlugin) — this device is the pen surface. */
+export const PLUGIN_DIGITIZER: string = 'digitizer';
 
 export interface PluginMeta {
   key: string;
@@ -110,6 +112,15 @@ export const IMPLEMENTED_PLUGINS: PluginMeta[] = [
     enabledByDefault: true,
     incomingTypes: ['kdeconnect.runcommand', 'kdeconnect.runcommand.output'],
     outgoingTypes: ['kdeconnect.runcommand.request']
+  },
+  {
+    // Android DigitizerPlugin — default off for phones. We only send strokes
+    // (the receiver is the desktop); incoming is empty because Android's
+    // DigitizerPlugin explicitly refuses to receive.
+    key: PLUGIN_DIGITIZER,
+    enabledByDefault: false,
+    incomingTypes: [],
+    outgoingTypes: ['kdeconnect.digitizer.session', 'kdeconnect.digitizer']
   }
 ];
 
@@ -134,6 +145,25 @@ const packetToPlugin: Map<string, string> = (() => {
 
 export function getPluginMeta(key: string): PluginMeta | undefined {
   return metaByKey.get(key);
+}
+
+/** Plugins with a device-specific settings screen (Android Plugin.hasSettings). */
+const SETTINGS_PLUGIN_KEYS: string[] = [
+  PLUGIN_RUNCOMMAND,
+  PLUGIN_REMOTE_INPUT,
+  PLUGIN_DIGITIZER,
+  PLUGIN_SHARE,
+  PLUGIN_FIND_MY_PHONE,
+  PLUGIN_MPRIS
+];
+
+export function pluginHasSettings(key: string): boolean {
+  for (let i = 0; i < SETTINGS_PLUGIN_KEYS.length; i++) {
+    if (SETTINGS_PLUGIN_KEYS[i] === key) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function isKnownPlugin(key: string): boolean {
@@ -165,6 +195,9 @@ export function pluginKeyForUiButton(uiKey: string): string | null {
   }
   if (uiKey === 'run_command') {
     return PLUGIN_RUNCOMMAND;
+  }
+  if (uiKey === 'drawing') {
+    return PLUGIN_DIGITIZER;
   }
   return null;
 }

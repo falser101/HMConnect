@@ -5,8 +5,9 @@ import {
   SystemVolumeSink
 } from '../service/KdeTypes';
 import { DeviceSession } from '../service/DeviceSession';
-import { goBack, routeParams } from '../common/NavUtil';
+import { goBack, routeParams, hostContext } from '../common/NavUtil';
 import { UiTheme } from '../common/ui/UiTheme';
+import { PluginPrefsStore } from '../store/PluginPrefsStore';
 
 interface MprisRouteParams {
   deviceId: string;
@@ -47,11 +48,22 @@ struct MprisControlPage {
   private deviceId: string = '';
   private client: DeviceSession | null = null;
   private posTimer: number = -1;
+  /** Seek step in µs (Android mpris_time preference, default 10s). */
+  private seekStepUs: number = MPRIS_DEFAULT_SEEK_US;
 
   aboutToAppear(): void {
     let params = routeParams(this.getUIContext()) as MprisRouteParams;
     if (params && params.deviceId) {
       this.deviceId = params.deviceId;
+      const ctx = hostContext(this.getUIContext());
+      if (ctx) {
+        PluginPrefsStore.getInstance().ensureInit(ctx).then(() => {
+          const secs: number = PluginPrefsStore.getInstance().getMprisTimeSeconds(this.deviceId);
+          if (secs > 0) {
+            this.seekStepUs = secs * 1000000;
+          }
+        });
+      }
       this.client = AppSession.getInstance().getService().getClientForDevice(params.deviceId);
       const hub = AppSession.getInstance().getService().getClient();
       hub.setMprisChangeListenerForDevice(params.deviceId, (p: MprisPlayerState | null) => {
@@ -852,7 +864,7 @@ struct MprisControlPage {
               .height(48)
               .backgroundColor(Color.Transparent)
               .onClick(() => {
-                this.callSeek(-MPRIS_DEFAULT_SEEK_US);
+                this.callSeek(-this.seekStepUs);
               })
             }
             .layoutWeight(1)
@@ -897,7 +909,7 @@ struct MprisControlPage {
               .height(48)
               .backgroundColor(Color.Transparent)
               .onClick(() => {
-                this.callSeek(MPRIS_DEFAULT_SEEK_US);
+                this.callSeek(this.seekStepUs);
               })
             }
             .layoutWeight(1)

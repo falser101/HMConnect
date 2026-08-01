@@ -587,6 +587,15 @@ export interface KdeDigitizerEventBody {
   pressure?: number;
 }
 
+/** Per-packet-type counters for the plugin stats dialog (Android DeviceStats). */
+export interface PacketStatCount {
+  packetType: string;
+  received: number;
+  sentOk: number;
+  sentFail: number;
+  total: number;
+}
+
 /**
  * KDE Connect remote-input special key numbering
  * (Android KeyListenerView.SpecialKeysMap). 1=DEL, 2=TAB, (3 unused),

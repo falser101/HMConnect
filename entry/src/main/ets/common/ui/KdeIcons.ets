@@ -17,6 +17,10 @@ export class KdeIconRes {
     return $r('sys.symbol.chevron_right');
   }
 
+  static check(): Resource {
+    return $r('sys.symbol.checkmark');
+  }
+
   static refresh(): Resource {
     return $r('sys.symbol.arrow_clockwise');
   }

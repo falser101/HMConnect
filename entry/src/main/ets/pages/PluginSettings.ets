@@ -1,8 +1,9 @@
 import { common } from '@kit.AbilityKit';
 import { AppSession } from '../app/AppSession';
-import { goBack, hostContext, routeParams } from '../common/NavUtil';
+import { goBack, hostContext, routeParams, pushPage } from '../common/NavUtil';
 import { UiTheme } from '../common/ui/UiTheme';
 import { KdeTopBar } from '../common/ui/KdeWidgets';
+import { KdeIcon, KdeIconRes } from '../common/ui/KdeIcons';
 import {
   IMPLEMENTED_PLUGINS,
   PLUGIN_BATTERY,
@@ -15,10 +16,12 @@ import {
   PLUGIN_SHARE,
   PLUGIN_SYSTEMVOLUME,
   PluginMeta,
-  isPluginSupportedByPeer
+  isPluginSupportedByPeer,
+  pluginHasSettings
 } from '../service/PluginRegistry';
 import { PluginSettingsStore } from '../store/PluginSettingsStore';
-import { DeviceListItem } from '../service/KdeTypes';
+import { PluginSubSettingsParams } from './PluginSubSettings';
+import { DeviceListItem, PacketStatCount } from '../service/KdeTypes';
 
 interface PluginSettingsParams {
   deviceId: string;
@@ -28,12 +31,16 @@ interface PluginSettingsParams {
 interface PluginRow {
   key: string;
   title: ResourceStr;
+  titleText: string;
   description: ResourceStr;
   enabled: boolean;
 }
 
 /**
  * Per-device plugin enable list — Android PluginSettingsListFragment.
+ * Rows toggle plugins; tapping an enabled plugin with a settings screen opens
+ * its sub-settings (Android PluginPreference content click). Toolbar overflow
+ * shows per-device packet stats (Android "Plugin stats").
  */
 @Entry
 @Component
@@ -43,8 +50,11 @@ struct PluginSettings {
   @State deviceId: string = '';
   @State deviceName: string = '';
   @State rows: PluginRow[] = [];
+  @State statsText: string = '';
+  @State showStats: boolean = false;
   private session: AppSession = AppSession.getInstance();
   private storeSubId: number = -1;
+  private ctxRef: common.UIAbilityContext | undefined = undefined;
 
   aboutToAppear() {
     this.session.attachUiContext(this.getUIContext());
@@ -56,6 +66,7 @@ struct PluginSettings {
       this.deviceName = params.deviceName;
     }
     const ctx: common.UIAbilityContext | undefined = hostContext(this.getUIContext());
+    this.ctxRef = ctx;
     if (ctx) {
       this.session.ensureStarted(ctx).then(() => {
         return PluginSettingsStore.getInstance().ensureDeviceLoaded(this.deviceId);
@@ -146,6 +157,20 @@ struct PluginSettings {
     return $r('app.string.pref_plugin_clipboard_desc');
   }
 
+  private titleTextOf(title: ResourceStr): string {
+    if (typeof title === 'string') {
+      return title;
+    }
+    if (this.ctxRef) {
+      try {
+        return this.ctxRef.resourceManager.getStringSync(title.id);
+      } catch (_e) {
+        // fall through
+      }
+    }
+    return '';
+  }
+
   private reloadRows(): void {
     const store = PluginSettingsStore.getInstance();
     // Android PluginSettingsListFragment: only supportedPlugins for this device
@@ -165,13 +190,17 @@ struct PluginSettings {
       if (!isPluginSupportedByPeer(meta.key, peerIn, peerOut)) {
         continue;
       }
+      const title: ResourceStr = this.titleForKey(meta.key);
       list.push({
         key: meta.key,
-        title: this.titleForKey(meta.key),
+        title: title,
+        titleText: this.titleTextOf(title),
         description: this.descForKey(meta.key),
         enabled: store.isEnabled(this.deviceId, meta.key)
       });
     }
+    // Android PluginFactory.sortPluginList — sort by display name
+    list.sort((a: PluginRow, b: PluginRow) => a.titleText.localeCompare(b.titleText));
     this.rows = list;
   }
 
@@ -188,15 +217,87 @@ struct PluginSettings {
     });
   }
 
+  /** Android PluginPreference content click — open the plugin's settings screen. */
+  private openSubSettings(row: PluginRow): void {
+    const params: PluginSubSettingsParams = {
+      deviceId: this.deviceId,
+      pluginKey: row.key,
+      pluginName: row.titleText
+    };
+    pushPage(this.getUIContext(), 'pages/PluginSubSettings', params);
+  }
+
+  private canOpenSettings(row: PluginRow): boolean {
+    return row.enabled && pluginHasSettings(row.key);
+  }
+
+  private onRowContentTap(row: PluginRow): void {
+    if (this.canOpenSettings(row)) {
+      this.openSubSettings(row);
+      return;
+    }
+    this.onToggle(row.key, !row.enabled);
+  }
+
+  private resString(res: Resource): string {
+    if (this.ctxRef) {
+      try {
+        return this.ctxRef.resourceManager.getStringSync(res.id);
+      } catch (_e) {
+        // fall through
+      }
+    }
+    return '';
+  }
+
+  private buildStatsText(): string {
+    const hub = this.session.getService().getClient();
+    const stats: PacketStatCount[] = hub.getPacketStatsForDevice(this.deviceId);
+    if (stats.length === 0) {
+      return this.resString($r('app.string.plugin_stats_empty'));
+    }
+    const sinceMs: number = hub.getStatsSinceMsForDevice(this.deviceId);
+    const elapsedMs: number = Math.max(0, Date.now() - sinceMs);
+    const hours: number = Math.floor(elapsedMs / 3600000);
+    const minutes: number = Math.floor((elapsedMs % 3600000) / 60000);
+    const sinceText: string = this.resString($r('app.string.plugin_stats_since'));
+    const receivedText: string = this.resString($r('app.string.plugin_stats_received'));
+    const sentText: string = this.resString($r('app.string.plugin_stats_sent'));
+    const failedText: string = this.resString($r('app.string.plugin_stats_failed'));
+    let lines: string = `${sinceText} ${hours}h ${minutes}m\n\n`;
+    for (let i = 0; i < stats.length; i++) {
+      const c: PacketStatCount = stats[i];
+      const name: string = c.packetType.startsWith('kdeconnect.') ?
+        c.packetType.substring('kdeconnect.'.length) : c.packetType;
+      lines += `${name}\n• ${c.received} ${receivedText}\n` +
+        `• ${c.sentOk + c.sentFail} ${sentText} (${c.sentFail} ${failedText})\n`;
+    }
+    return lines;
+  }
+
+  private openStats(): void {
+    this.statsText = this.buildStatsText();
+    this.showStats = true;
+  }
+
   @Builder
   PluginRowItem(row: PluginRow) {
     Row() {
       Column() {
-        Text(row.title)
-          .fontSize(16)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(UiTheme.onSurface)
-          .width('100%')
+        Row() {
+          Text(row.title)
+            .fontSize(16)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(UiTheme.onSurface)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .layoutWeight(1)
+          if (this.canOpenSettings(row)) {
+            KdeIcon({ symbol: KdeIconRes.chevronRight(), iconSize: 18, color: UiTheme.onSurfaceVariant })
+          }
+        }
+        .width('100%')
+
         Text(row.description)
           .fontSize(13)
           .fontColor(UiTheme.onSurfaceVariant)
@@ -206,6 +307,9 @@ struct PluginSettings {
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
       .padding({ right: 12 })
+      .onClick(() => {
+        this.onRowContentTap(row);
+      })
 
       Toggle({ type: ToggleType.Switch, isOn: row.enabled })
         .selectedColor(UiTheme.primary)
@@ -226,8 +330,12 @@ struct PluginSettings {
       KdeTopBar({
         title: $r('app.string.menu_plugin_settings'),
         showBack: true,
+        showOverflow: true,
         onBack: () => {
           goBack(this.getUIContext());
+        },
+        onOverflow: () => {
+          this.openStats();
         }
       })
 
@@ -253,6 +361,45 @@ struct PluginSettings {
       .layoutWeight(1)
       .scrollBar(BarState.Off)
       .edgeEffect(EdgeEffect.Spring)
+
+      // ── Plugin stats dialog (Android DeviceStats) ──
+      if (this.showStats) {
+        Stack({ alignContent: Alignment.Center }) {
+          Column()
+            .width('100%')
+            .height('100%')
+            .backgroundColor(UiTheme.scrim)
+            .onClick(() => {
+              this.showStats = false;
+            })
+          Column({ space: 12 }) {
+            Text($r('app.string.plugin_stats'))
+              .fontSize(18)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(UiTheme.onSurface)
+              .width('100%')
+            Text(this.statsText)
+              .fontSize(13)
+              .fontColor(UiTheme.onSurface)
+              .width('100%')
+            Button($r('app.string.ok'))
+              .width('100%')
+              .height(44)
+              .fontColor(UiTheme.onPrimary)
+              .backgroundColor(UiTheme.primary)
+              .borderRadius(UiTheme.radiusButton)
+              .onClick(() => {
+                this.showStats = false;
+              })
+          }
+          .width('86%')
+          .padding(24)
+          .backgroundColor(UiTheme.cardBg)
+          .borderRadius(28)
+        }
+        .width('100%')
+        .height('100%')
+      }
     }
     .width('100%')
     .height('100%')

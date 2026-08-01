@@ -321,6 +321,150 @@
       "value": "Other"
     },
     {
+      "name": "mousepad_single_tap_settings_title",
+      "value": "Single tap action"
+    },
+    {
+      "name": "mousepad_double_tap_settings_title",
+      "value": "Double tap action"
+    },
+    {
+      "name": "mousepad_triple_tap_settings_title",
+      "value": "Triple tap action"
+    },
+    {
+      "name": "mousepad_sensitivity_settings_title",
+      "value": "Sensitivity"
+    },
+    {
+      "name": "mousepad_acceleration_profile_settings_title",
+      "value": "Acceleration"
+    },
+    {
+      "name": "mousepad_scroll_direction_title",
+      "value": "Reverse scrolling"
+    },
+    {
+      "name": "mousepad_scroll_sensitivity_title",
+      "value": "Scroll sensitivity"
+    },
+    {
+      "name": "mousepad_mouse_buttons_title",
+      "value": "Show mouse buttons"
+    },
+    {
+      "name": "mousepad_doubletap_drag_title",
+      "value": "Double-tap drag behavior"
+    },
+    {
+      "name": "mousepad_show_keyboard",
+      "value": "Show keyboard when opened"
+    },
+    {
+      "name": "subsettings_runcommand_name_title",
+      "value": "Command name as title"
+    },
+    {
+      "name": "subsettings_runcommand_name_summary",
+      "value": "When on, the command name is the title; when off, the command itself"
+    },
+    {
+      "name": "subsettings_not_set",
+      "value": "Not set"
+    },
+    {
+      "name": "digitizer_pref_hide_draw_button_title",
+      "value": "Hide draw button"
+    },
+    {
+      "name": "digitizer_pref_hide_draw_button_summary",
+      "value": "Draw directly on the canvas without holding a button"
+    },
+    {
+      "name": "digitizer_pref_draw_button_side_title",
+      "value": "Draw button position"
+    },
+    {
+      "name": "share_destination_customize",
+      "value": "Custom destination"
+    },
+    {
+      "name": "share_destination_customize_summary",
+      "value": "Choose a folder for received files"
+    },
+    {
+      "name": "share_destination_folder",
+      "value": "Destination folder"
+    },
+    {
+      "name": "share_notification_preference",
+      "value": "Notify on file received"
+    },
+    {
+      "name": "share_notification_preference_summary",
+      "value": "Show a notification when a file arrives"
+    },
+    {
+      "name": "findmyphone_sound_title",
+      "value": "Play ringtone"
+    },
+    {
+      "name": "findmyphone_flashlight_title",
+      "value": "Flashlight"
+    },
+    {
+      "name": "findmyphone_camera_explanation",
+      "value": "Also turn on the flashlight while ringing"
+    },
+    {
+      "name": "mpris_time_settings_title",
+      "value": "Seek step"
+    },
+    {
+      "name": "mpris_notification_settings_title",
+      "value": "Media notification"
+    },
+    {
+      "name": "mpris_notification_settings_summary",
+      "value": "Show a notification when media changes"
+    },
+    {
+      "name": "mpris_keepwatching_settings_title",
+      "value": "Keep watching"
+    },
+    {
+      "name": "mpris_keepwatching_settings_summary",
+      "value": "Keep watching media sessions continuously"
+    },
+    {
+      "name": "plugin_stats",
+      "value": "Plugin stats"
+    },
+    {
+      "name": "plugin_stats_empty",
+      "value": "No statistics yet"
+    },
+    {
+      "name": "plugin_stats_since",
+      "value": "From last"
+    },
+    {
+      "name": "plugin_stats_received",
+      "value": "received"
+    },
+    {
+      "name": "plugin_stats_sent",
+      "value": "sent"
+    },
+    {
+      "name": "plugin_stats_failed",
+      "value": "failed"
+    },
+    {
+      "name": "ok",
+      "value": "OK"
+    },
+    {
       "name": "compose_send_title",
       "value": "Send text"
     },

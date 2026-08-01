@@ -41,6 +41,10 @@
       "value": "用于读取本机媒体播放状态并允许已配对设备远程控制播放（暂停、切歌、进度）"
     },
     {
+      "name": "permission_camera_reason",
+      "value": "用于“查找设备”响铃时打开闪光灯"
+    },
+    {
       "name": "permission_wifi_reason",
       "value": "用于获取当前 Wi-Fi 网络以支持可信网络自动配对"
     },
@@ -363,6 +367,150 @@
     {
       "name": "mousepad_settings_section_other",
       "value": "其他"
+    },
+    {
+      "name": "mousepad_single_tap_settings_title",
+      "value": "单击动作"
+    },
+    {
+      "name": "mousepad_double_tap_settings_title",
+      "value": "双击动作"
+    },
+    {
+      "name": "mousepad_triple_tap_settings_title",
+      "value": "三击动作"
+    },
+    {
+      "name": "mousepad_sensitivity_settings_title",
+      "value": "灵敏度"
+    },
+    {
+      "name": "mousepad_acceleration_profile_settings_title",
+      "value": "加速度"
+    },
+    {
+      "name": "mousepad_scroll_direction_title",
+      "value": "反向滚动"
+    },
+    {
+      "name": "mousepad_scroll_sensitivity_title",
+      "value": "滚动灵敏度"
+    },
+    {
+      "name": "mousepad_mouse_buttons_title",
+      "value": "显示鼠标按钮"
+    },
+    {
+      "name": "mousepad_doubletap_drag_title",
+      "value": "双击拖拽行为"
+    },
+    {
+      "name": "mousepad_show_keyboard",
+      "value": "打开时显示键盘"
+    },
+    {
+      "name": "subsettings_runcommand_name_title",
+      "value": "命令名称作为标题"
+    },
+    {
+      "name": "subsettings_runcommand_name_summary",
+      "value": "开启时命令名作为标题，关闭后显示命令本身"
+    },
+    {
+      "name": "subsettings_not_set",
+      "value": "未设置"
+    },
+    {
+      "name": "digitizer_pref_hide_draw_button_title",
+      "value": "隐藏绘制按钮"
+    },
+    {
+      "name": "digitizer_pref_hide_draw_button_summary",
+      "value": "手指直接在画布上绘制，无需按住按钮"
+    },
+    {
+      "name": "digitizer_pref_draw_button_side_title",
+      "value": "绘制按钮位置"
+    },
+    {
+      "name": "share_destination_customize",
+      "value": "自定义保存位置"
+    },
+    {
+      "name": "share_destination_customize_summary",
+      "value": "为收到的文件选择保存目录"
+    },
+    {
+      "name": "share_destination_folder",
+      "value": "保存目录"
+    },
+    {
+      "name": "share_notification_preference",
+      "value": "收到文件通知"
+    },
+    {
+      "name": "share_notification_preference_summary",
+      "value": "接收文件完成后显示通知"
+    },
+    {
+      "name": "findmyphone_sound_title",
+      "value": "播放铃声"
+    },
+    {
+      "name": "findmyphone_flashlight_title",
+      "value": "闪光灯闪烁"
+    },
+    {
+      "name": "findmyphone_camera_explanation",
+      "value": "响铃时同时打开闪光灯"
+    },
+    {
+      "name": "mpris_time_settings_title",
+      "value": "快进快退步长"
+    },
+    {
+      "name": "mpris_notification_settings_title",
+      "value": "媒体通知"
+    },
+    {
+      "name": "mpris_notification_settings_summary",
+      "value": "媒体播放变化时显示通知"
+    },
+    {
+      "name": "mpris_keepwatching_settings_title",
+      "value": "持续监听"
+    },
+    {
+      "name": "mpris_keepwatching_settings_summary",
+      "value": "保持对媒体会话的持续监听"
+    },
+    {
+      "name": "plugin_stats",
+      "value": "插件统计"
+    },
+    {
+      "name": "plugin_stats_empty",
+      "value": "暂无统计数据"
+    },
+    {
+      "name": "plugin_stats_since",
+      "value": "从最近"
+    },
+    {
+      "name": "plugin_stats_received",
+      "value": "接收"
+    },
+    {
+      "name": "plugin_stats_sent",
+      "value": "发送"
+    },
+    {
+      "name": "plugin_stats_failed",
+      "value": "失败"
+    },
+    {
+      "name": "ok",
+      "value": "确定"
     },
     {
       "name": "compose_send_title",

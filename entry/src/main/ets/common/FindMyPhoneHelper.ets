@@ -3,12 +3,21 @@ import { vibrator } from '@kit.SensorServiceKit';
 import { media } from '@kit.MediaKit';
 import { audio } from '@kit.AudioKit';
 import { avSession } from '@kit.AVSessionKit';
+import { camera } from '@kit.CameraKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { AppNotifier } from './AppNotifier';
 import { KdeBackgroundService } from '../service/KdeBackgroundService';
 import { RemoteMprisMediaSession } from '../service/RemoteMprisMediaSession';
 
 export type FindPhoneStateListener = (active: boolean, peerName: string) => void;
+
+/** Ring options (Android findmyphoneplugin_preferences). */
+export interface FindPhoneOptions {
+  /** Play the alarm sound (default true). */
+  sound: boolean;
+  /** Flash the torch while ringing (default false). */
+  flashlight: boolean;
+}
 
 /**
  * Continuous ring + vibrate for desktop "Find My Phone".
@@ -34,6 +43,7 @@ export class FindMyPhoneHelper {
   private session: avSession.AVSession | null = null;
   private listeners: Map<number, FindPhoneStateListener> = new Map();
   private nextListenerId: number = 1;
+  private flashlightOn: boolean = false;
   private static readonly DEFAULT_DURATION_MS: number = 120000;
 
   public static getInstance(): FindMyPhoneHelper {
@@ -79,7 +89,9 @@ export class FindMyPhoneHelper {
   /**
    * Start continuous alarm even when app is backgrounded.
    */
-  public async start(peerName: string, durationMs: number = FindMyPhoneHelper.DEFAULT_DURATION_MS): Promise<void> {
+  public async start(peerName: string,
+    opts: FindPhoneOptions = { sound: true, flashlight: false },
+    durationMs: number = FindMyPhoneHelper.DEFAULT_DURATION_MS): Promise<void> {
     this.stopInternal(false);
     this.active = true;
     this.peerName = peerName.length > 0 ? peerName : '电脑';
@@ -99,7 +111,12 @@ export class FindMyPhoneHelper {
 
     // 3) Sound + vibration (continuous task should keep timers/audio alive in bg)
     this.startVibrationLoop(token);
-    await this.startAudioLoop(token);
+    if (opts.sound) {
+      await this.startAudioLoop(token);
+    }
+    if (opts.flashlight) {
+      this.startFlashlight();
+    }
 
     // 4) Best-effort: bring UI to front for full-screen stop page
     this.tryBringToForeground();
@@ -131,6 +148,7 @@ export class FindMyPhoneHelper {
     this.stopVibration();
     this.stopAudio();
     this.stopAvSession();
+    this.stopFlashlight();
     // Re-hold dataTransfer keep-alive after find-phone ends (never stopBackgroundRunning).
     KdeBackgroundService.getInstance().forceRestartContinuousTask().catch((e: Error) => {
       console.warn('[FindPhone] re-ensure continuous task failed:', e.message);
@@ -232,6 +250,41 @@ export class FindMyPhoneHelper {
       });
     } catch (e) {
       console.warn('[FindPhone] startAbility exception:', JSON.stringify(e));
+    }
+  }
+
+  private stopFlashlight(): void {
+    if (!this.flashlightOn) {
+      return;
+    }
+    this.flashlightOn = false;
+    try {
+      if (this.context) {
+        const mgr = camera.getCameraManager(this.context);
+        if (mgr.isTorchSupported()) {
+          mgr.setTorchMode(camera.TorchMode.OFF);
+        }
+      }
+    } catch (e) {
+      console.warn('[FindPhone] torch off failed:', JSON.stringify(e));
+    }
+  }
+
+  private startFlashlight(): void {
+    if (this.flashlightOn || !this.context) {
+      return;
+    }
+    try {
+      const mgr = camera.getCameraManager(this.context);
+      if (!mgr.isTorchSupported()) {
+        console.info('[FindPhone] torch not supported');
+        return;
+      }
+      mgr.setTorchMode(camera.TorchMode.ON);
+      this.flashlightOn = true;
+      console.info('[FindPhone] torch on');
+    } catch (e) {
+      console.warn('[FindPhone] torch on failed:', JSON.stringify(e));
     }
   }
 

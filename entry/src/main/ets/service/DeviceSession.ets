@@ -52,6 +52,7 @@ import {
   MousepadModifiers,
   KdeDigitizerSessionBody,
   KdeDigitizerEventBody,
+  PacketStatCount,
   KdeRunCommandRequestBody,
   KdeRunCommandEntry,
   KdeRunCommandListBody,
@@ -70,6 +71,7 @@ import {
 } from './KdeTypes';
 import { DeviceStore } from '../store/DeviceStore';
 import { PluginSettingsStore } from '../store/PluginSettingsStore';
+import { PluginPrefsStore } from '../store/PluginPrefsStore';
 import { SettingsStore } from '../store/SettingsStore';
 import {
   PLUGIN_BATTERY,
@@ -86,7 +88,7 @@ import {
 } from './PluginRegistry';
 import { utf8Decode } from '../common/Utf8';
 import { BatteryHelper } from '../common/BatteryHelper';
-import { FindMyPhoneHelper } from '../common/FindMyPhoneHelper';
+import { FindMyPhoneHelper, FindPhoneOptions } from '../common/FindMyPhoneHelper';
 import { VerificationKeyHelper } from '../common/VerificationKeyHelper';
 import { RemoteMprisMediaSession } from './RemoteMprisMediaSession';
 import {
@@ -2745,6 +2747,7 @@ export class DeviceSession implements SystemMediaExporter {
   private dispatchPacket(packet: KdePacket<object>): void {
     const type: string = packet.type;
     const body: object = packet.body;
+    this.recordReceived(type);
     console.info(`[KDE-MVP] Packet: ${type}`);
     if (type === 'kdeconnect.pair') {
       let pairBody = body as KdePairBody;
@@ -2942,7 +2945,12 @@ export class DeviceSession implements SystemMediaExporter {
     if (type === 'kdeconnect.findmyphone.request') {
       let peerName = this.peerDevice?.deviceName ?? '电脑';
       console.info(`[KDE-MVP] Find My Phone from ${peerName}`);
-      FindMyPhoneHelper.getInstance().start(peerName).catch((e: Error) => {
+      const peerId: string = this.peerDevice?.deviceId ?? this.getBoundDeviceId();
+      const opts: FindPhoneOptions = {
+        sound: PluginPrefsStore.getInstance().getFindMyPhoneSound(peerId),
+        flashlight: PluginPrefsStore.getInstance().getFindMyPhoneFlashlight(peerId)
+      };
+      FindMyPhoneHelper.getInstance().start(peerName, opts).catch((e: Error) => {
         console.error('[KDE-MVP] FindMyPhone start failed:', e.message);
       });
       this.emit(this.paired ? 'paired' : 'connected',
@@ -3283,9 +3291,12 @@ export class DeviceSession implements SystemMediaExporter {
       fileName: job.lastFileName.length > 0 ? job.lastFileName : undefined,
       filePath: job.lastFilePath.length > 0 ? job.lastFilePath : undefined
     };
-    AppNotifier.getInstance().notifyTransferFinished(result).catch((e: Error) => {
-      console.error('[KDE-MVP] receive finished notify failed:', e.message);
-    });
+    // Android shareplugin_preferences: notify on receive (default on)
+    if (PluginPrefsStore.getInstance().getShareNotification(this.getBoundDeviceId())) {
+      AppNotifier.getInstance().notifyTransferFinished(result).catch((e: Error) => {
+        console.error('[KDE-MVP] receive finished notify failed:', e.message);
+      });
+    }
     this.emit(this.paired ? 'paired' : 'connected',
       `收到文件: ${job.lastFileName.length > 0 ? job.lastFileName : job.currentFileName}`);
     if (this.incomingJob === job) {
@@ -4425,9 +4436,7 @@ export class DeviceSession implements SystemMediaExporter {
     this.tlsSendQueue.push(data);
     // Only keep the latest callback for simplicity (MPRIS fire-and-forget OK)
     this.pumpTlsSendQueue(callback);
-  }
-
-  private pumpTlsSendQueue(callback?: (err: Error | null) => void): void {
+  }  private pumpTlsSendQueue(callback?: (err: Error | null) => void): void {
     if (this.tlsSendBusy) {
       return;
     }
@@ -4436,6 +4445,7 @@ export class DeviceSession implements SystemMediaExporter {
     }
     const chunk: string = this.tlsSendQueue.shift() as string;
     this.tlsSendBusy = true;
+    const sentType: string = this.packetTypeFromJson(chunk);
 
     const onDone = (err: Error | Object | null | undefined): void => {
       this.tlsSendBusy = false;
@@ -4456,6 +4466,7 @@ export class DeviceSession implements SystemMediaExporter {
       }
       if (failErr !== null) {
         console.error('[KDE-MVP] TLS send failed:', failErr.message);
+        this.recordSent(sentType, false);
         this.onTlsSendFailed(failErr);
         if (callback) {
           callback(failErr);
@@ -4463,6 +4474,7 @@ export class DeviceSession implements SystemMediaExporter {
         this.tlsSendQueue = [];
         return;
       }
+      this.recordSent(sentType, true);
       if (callback && this.tlsSendQueue.length === 0) {
         callback(null);
       }
@@ -4484,6 +4496,64 @@ export class DeviceSession implements SystemMediaExporter {
     } catch (e) {
       onDone(e instanceof Error ? e : new Error(JSON.stringify(e)));
     }
+  }
+
+  // ── Packet stats (Android DeviceStats) ────────────────────
+
+  private packetStats: Map<string, PacketStatCount> = new Map();
+  private statsSinceMs: number = Date.now();
+
+  /** Cheap type extraction from a serialized packet line. */
+  private packetTypeFromJson(line: string): string {
+    const m = /"type"\s*:\s*"([^"]+)"/.exec(line);
+    return m ? m[1] : 'unknown';
+  }
+
+  private recordReceived(type: string): void {
+    const t: string = type.length > 0 ? type : 'unknown';
+    let c: PacketStatCount | undefined = this.packetStats.get(t);
+    if (!c) {
+      c = { packetType: t, received: 0, sentOk: 0, sentFail: 0, total: 0 };
+      this.packetStats.set(t, c);
+    }
+    c.received += 1;
+    c.total += 1;
+  }
+
+  private recordSent(type: string, ok: boolean): void {
+    const t: string = type.length > 0 ? type : 'unknown';
+    let c: PacketStatCount | undefined = this.packetStats.get(t);
+    if (!c) {
+      c = { packetType: t, received: 0, sentOk: 0, sentFail: 0, total: 0 };
+      this.packetStats.set(t, c);
+    }
+    if (ok) {
+      c.sentOk += 1;
+    } else {
+      c.sentFail += 1;
+    }
+    c.total += 1;
+  }
+
+  /** Stats sorted by total (Android DeviceStats sort). */
+  public getPacketStats(): PacketStatCount[] {
+    const out: PacketStatCount[] = [];
+    this.packetStats.forEach((c: PacketStatCount) => {
+      const copy: PacketStatCount = {
+        packetType: c.packetType,
+        received: c.received,
+        sentOk: c.sentOk,
+        sentFail: c.sentFail,
+        total: c.total
+      };
+      out.push(copy);
+    });
+    out.sort((a: PacketStatCount, b: PacketStatCount) => b.total - a.total);
+    return out;
+  }
+
+  public getStatsSinceMs(): number {
+    return this.statsSinceMs;
   }
 
   /** Mark link dead and try reverse/outbound recovery for trusted peers. */

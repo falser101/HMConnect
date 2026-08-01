@@ -1,8 +1,9 @@
 import { AppSession } from '../app/AppSession';
 import { KdeRunCommandEntry, RunCommandOutputEvent } from '../service/KdeTypes';
-import { goBack, routeParams } from '../common/NavUtil';
+import { goBack, routeParams, hostContext } from '../common/NavUtil';
 import { UiTheme } from '../common/ui/UiTheme';
 import { KdeTopBar } from '../common/ui/KdeWidgets';
+import { PluginPrefsStore } from '../store/PluginPrefsStore';
 
 interface RunCommandRouteParams {
   deviceId: string;
@@ -31,6 +32,7 @@ struct RunCommandPage {
   @State runningKey: string = '';
   @State loaded: boolean = false;
   @State canAdd: boolean = false;
+  @State nameAsTitle: boolean = true;
   private deviceId: string = '';
   private outputScroller: Scroller = new Scroller();
 
@@ -38,6 +40,12 @@ struct RunCommandPage {
     const params = routeParams(this.getUIContext()) as RunCommandRouteParams;
     if (params && params.deviceId) {
       this.deviceId = params.deviceId;
+      const ctx = hostContext(this.getUIContext());
+      if (ctx) {
+        PluginPrefsStore.getInstance().ensureInit(ctx).then(() => {
+          this.nameAsTitle = PluginPrefsStore.getInstance().getRunCommandNameAsTitle(this.deviceId);
+        });
+      }
     }
     const hub = AppSession.getInstance().getService().getClient();
     if (this.deviceId.length > 0) {
@@ -170,13 +178,23 @@ struct RunCommandPage {
   CommandRow(entry: KdeRunCommandEntry) {
     Column({ space: 2 }) {
       Row() {
-        Text(entry.name)
-          .fontSize(UiTheme.bodyMd)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(UiTheme.onSurface)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .layoutWeight(1)
+        if (this.nameAsTitle) {
+          Text(entry.name)
+            .fontSize(UiTheme.bodyMd)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(UiTheme.onSurface)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .layoutWeight(1)
+        } else {
+          Text(entry.command)
+            .fontSize(UiTheme.bodyMd)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(UiTheme.onSurface)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .layoutWeight(1)
+        }
         if (this.runningKey === entry.key) {
           Text($r('app.string.run_command_running'))
             .fontSize(UiTheme.bodySm)
@@ -185,7 +203,7 @@ struct RunCommandPage {
       }
       .width('100%')
 
-      Text(entry.command)
+      Text(this.nameAsTitle ? entry.command : entry.name)
         .fontSize(UiTheme.bodySm)
         .fontColor(UiTheme.textMuted)
         .maxLines(1)

@@ -7,6 +7,7 @@ import {
   KdeShareRequestBody,
   PeerBatteryInfo,
   KdeStatus,
+  PacketStatCount,
   ConnectionState,
   MprisPlayerState,
   SystemVolumeSink,
@@ -537,6 +538,17 @@ export class KdeClient {
 
   public getPeerBatteryForDevice(deviceId: string): PeerBatteryInfo | null {
     return this.sessions.get(deviceId)?.getPeerBattery() ?? null;
+  }
+
+  /** Per-device packet stats for the plugin stats dialog (Android DeviceStats). */
+  public getPacketStatsForDevice(deviceId: string): PacketStatCount[] {
+    const s = this.sessions.get(deviceId);
+    return s ? s.getPacketStats() : [];
+  }
+
+  public getStatsSinceMsForDevice(deviceId: string): number {
+    const s = this.sessions.get(deviceId);
+    return s ? s.getStatsSinceMs() : 0;
   }
 
   public stopFindMyPhone(): void {

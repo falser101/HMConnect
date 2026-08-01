@@ -8,6 +8,7 @@
     "pages/FindMyPhone",
     "pages/MprisControl",
     "pages/PluginSettings",
+    "pages/PluginSubSettings",
     "pages/Presentation",
     "pages/RemoteInput",
     "pages/RemoteInputCompose",
