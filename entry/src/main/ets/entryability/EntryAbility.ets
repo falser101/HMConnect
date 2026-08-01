@@ -9,7 +9,8 @@ import { AppNotifier } from '../common/AppNotifier';
 import { KdeBackgroundService } from '../service/KdeBackgroundService';
 import { RemoteMprisMediaSession } from '../service/RemoteMprisMediaSession';
 import { ImmersiveUtil } from '../common/ImmersiveUtil';
-import { UiTheme } from '../common/ui/UiTheme';
+import { UiTheme, cssColor } from '../common/ui/UiTheme';
+import { SettingsStore } from '../store/SettingsStore';
 
 const DOMAIN = 0x0000;
 
@@ -25,12 +26,30 @@ export default class EntryAbility extends UIAbility {
     // Start protocol stack at Ability level (survives page switches)
     AppSession.getInstance().ensureStarted(this.context).then(() => {
       hilog.info(DOMAIN, 'testTag', 'AppSession started');
+      this.applyPersistedTheme();
       this.handleWant(want);
       // Start background service (continuous task + persistent notification)
       KdeBackgroundService.getInstance().start(this.context);
     }).catch((e: Error) => {
       hilog.error(DOMAIN, 'testTag', 'AppSession start failed: %{public}s', e.message);
     });
+  }
+
+  /** Apply the persisted theme (light/dark/system) to the whole app at startup. */
+  private applyPersistedTheme(): void {
+    const theme: string = SettingsStore.getInstance().getTheme();
+    let mode: number = ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET;
+    if (theme === 'light') {
+      mode = ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT;
+    } else if (theme === 'dark') {
+      mode = ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
+    }
+    try {
+      this.context.getApplicationContext().setColorMode(mode);
+      hilog.info(DOMAIN, 'testTag', 'Persisted theme applied: %{public}s', theme);
+    } catch (e) {
+      hilog.error(DOMAIN, 'testTag', 'setColorMode failed: %{public}s', JSON.stringify(e));
+    }
   }
 
   onNewWant(want: Want, _launchParam: AbilityConstant.LaunchParam): void {
@@ -308,7 +327,11 @@ export default class EntryAbility extends UIAbility {
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageCreate');
 
     // Edge-to-edge before first paint: transparent system bars + continuous app chrome.
-    ImmersiveUtil.prepaint(windowStage, UiTheme.surface, UiTheme.onSurface);
+    ImmersiveUtil.prepaint(
+      windowStage,
+      cssColor(this.context, UiTheme.surface),
+      cssColor(this.context, UiTheme.onSurface)
+    );
 
     windowStage.loadContent('pages/Index', (err) => {
       if (err.code) {
@@ -317,7 +340,10 @@ export default class EntryAbility extends UIAbility {
       }
       hilog.info(DOMAIN, 'testTag', 'Succeeded in loading the content.');
       // Re-apply after content so system does not restore opaque status bar defaults.
-      ImmersiveUtil.applyChrome(UiTheme.surface, UiTheme.onSurface);
+      ImmersiveUtil.applyChrome(
+        cssColor(this.context, UiTheme.surface),
+        cssColor(this.context, UiTheme.onSurface)
+      );
     });
   }
 

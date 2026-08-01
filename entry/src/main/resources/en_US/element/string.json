@@ -5,6 +5,114 @@
       "value": "Device name"
     },
     {
+      "name": "settings_title",
+      "value": "Settings"
+    },
+    {
+      "name": "settings_save",
+      "value": "Save"
+    },
+    {
+      "name": "settings_connect",
+      "value": "Connect"
+    },
+    {
+      "name": "settings_name_dialog_title",
+      "value": "Device name"
+    },
+    {
+      "name": "settings_name_dialog_hint",
+      "value": "Enter device name"
+    },
+    {
+      "name": "settings_name_saved",
+      "value": "Device name saved"
+    },
+    {
+      "name": "settings_theme_follow",
+      "value": "Follow system"
+    },
+    {
+      "name": "settings_theme_light",
+      "value": "Light"
+    },
+    {
+      "name": "settings_theme_dark",
+      "value": "Dark"
+    },
+    {
+      "name": "settings_addip_dialog_title",
+      "value": "Add device by IP"
+    },
+    {
+      "name": "settings_addip_ip_hint",
+      "value": "IP address"
+    },
+    {
+      "name": "settings_addip_port_hint",
+      "value": "Port (default 1716)"
+    },
+    {
+      "name": "settings_added_ip_toast",
+      "value": "Attempting to connect to device"
+    },
+    {
+      "name": "settings_exported_toast",
+      "value": "Logs exported"
+    },
+    {
+      "name": "settings_export_failed",
+      "value": "Export failed"
+    },
+    {
+      "name": "trusted_explain",
+      "value": "Pairing requests are accepted automatically while connected to a trusted network"
+    },
+    {
+      "name": "trusted_add_current",
+      "value": "Add current network"
+    },
+    {
+      "name": "trusted_add_manual",
+      "value": "Add manually"
+    },
+    {
+      "name": "trusted_current_label",
+      "value": "Current network:"
+    },
+    {
+      "name": "trusted_empty",
+      "value": "No trusted networks yet"
+    },
+    {
+      "name": "trusted_remove",
+      "value": "Remove"
+    },
+    {
+      "name": "trusted_manual_title",
+      "value": "Add trusted network"
+    },
+    {
+      "name": "trusted_manual_hint",
+      "value": "Wi-Fi name (SSID)"
+    },
+    {
+      "name": "trusted_confirm",
+      "value": "Add"
+    },
+    {
+      "name": "trusted_no_wifi",
+      "value": "Not connected to Wi-Fi"
+    },
+    {
+      "name": "trusted_already_added",
+      "value": "This network is already in the list"
+    },
+    {
+      "name": "trusted_added",
+      "value": "Trusted network added"
+    },
+    {
       "name": "settings_choose_theme",
       "value": "Choose theme"
     },
@@ -117,6 +225,118 @@
       "value": "Remote input"
     },
     {
+      "name": "pref_plugin_remote_input",
+      "value": "Remote input"
+    },
+    {
+      "name": "pref_plugin_remote_input_desc",
+      "value": "Use your phone as a touchpad and keyboard for the computer"
+    },
+    {
+      "name": "mousepad_info",
+      "value": "Move a finger on the screen to move the mouse cursor. Tap to click; two/three fingers for right and middle buttons. Two fingers to scroll. Long press to drag & drop"
+    },
+    {
+      "name": "mousepad_dragging",
+      "value": "Dragging · tap to release"
+    },
+    {
+      "name": "mousepad_left_click",
+      "value": "Left"
+    },
+    {
+      "name": "mousepad_middle_click",
+      "value": "Middle"
+    },
+    {
+      "name": "mousepad_right_click",
+      "value": "Right"
+    },
+    {
+      "name": "mousepad_menu_right_click",
+      "value": "Right click"
+    },
+    {
+      "name": "mousepad_menu_middle_click",
+      "value": "Middle click"
+    },
+    {
+      "name": "mousepad_menu_show_keyboard",
+      "value": "Show keyboard"
+    },
+    {
+      "name": "mousepad_menu_hide_keyboard",
+      "value": "Hide keyboard"
+    },
+    {
+      "name": "mousepad_menu_settings",
+      "value": "Touchpad settings"
+    },
+    {
+      "name": "mousepad_compose_send",
+      "value": "Send text"
+    },
+    {
+      "name": "mousepad_keyboard_not_supported",
+      "value": "Keyboard input not supported by the paired device"
+    },
+    {
+      "name": "mousepad_keyboard_hint",
+      "value": "Type here — sent to the computer in real time"
+    },
+    {
+      "name": "mousepad_keyboard_placeholder",
+      "value": "Type to computer…"
+    },
+    {
+      "name": "mousepad_keyboard_enter",
+      "value": "Enter"
+    },
+    {
+      "name": "mousepad_connecting",
+      "value": "Connecting to device…"
+    },
+    {
+      "name": "mousepad_not_connected",
+      "value": "Device not connected — touchpad unavailable"
+    },
+    {
+      "name": "mousepad_settings_title",
+      "value": "Touchpad settings"
+    },
+    {
+      "name": "mousepad_settings_section_tap",
+      "value": "Tap actions"
+    },
+    {
+      "name": "mousepad_settings_section_pointer",
+      "value": "Pointer"
+    },
+    {
+      "name": "mousepad_settings_section_scroll",
+      "value": "Scrolling"
+    },
+    {
+      "name": "mousepad_settings_section_other",
+      "value": "Other"
+    },
+    {
+      "name": "compose_send_title",
+      "value": "Send text"
+    },
+    {
+      "name": "compose_send_hint",
+      "value": "Type text to send to the computer…"
+    },
+    {
+      "name": "compose_send",
+      "value": "Send"
+    },
+    {
+      "name": "compose_clear",
+      "value": "Clear"
+    },
+    {
       "name": "plugin_run_command",
       "value": "Run Command"
     },
@@ -125,8 +345,48 @@
       "value": "Presentation remote"
     },
     {
+      "name": "presentation_prev",
+      "value": "Previous"
+    },
+    {
+      "name": "presentation_next",
+      "value": "Next"
+    },
+    {
+      "name": "presentation_start",
+      "value": "Start slideshow"
+    },
+    {
+      "name": "presentation_exit",
+      "value": "Exit slideshow"
+    },
+    {
+      "name": "presentation_not_connected",
+      "value": "Device not connected"
+    },
+    {
+      "name": "presentation_hint",
+      "value": "Swipe or tap the buttons to change slides"
+    },
+    {
       "name": "plugin_drawing_tablet",
       "value": "Use as drawing tablet"
+    },
+    {
+      "name": "digitizer_tool_pen",
+      "value": "Pen"
+    },
+    {
+      "name": "digitizer_tool_rubber",
+      "value": "Eraser"
+    },
+    {
+      "name": "digitizer_hint",
+      "value": "Draw on the canvas — strokes appear on the computer in real time"
+    },
+    {
+      "name": "digitizer_not_connected",
+      "value": "Device not connected"
     },
     {
       "name": "plugin_send_clipboard",
@@ -331,6 +591,42 @@
     {
       "name": "plugin_disabled_toast",
       "value": "This plugin is disabled for this device"
+    },
+    {
+      "name": "run_command_not_connected",
+      "value": "Device not connected"
+    },
+    {
+      "name": "run_command_no_commands",
+      "value": "No commands available on this device"
+    },
+    {
+      "name": "run_command_loading",
+      "value": "Fetching command list…"
+    },
+    {
+      "name": "run_command_running",
+      "value": "Running"
+    },
+    {
+      "name": "run_command_output_title",
+      "value": "Output"
+    },
+    {
+      "name": "run_command_refresh",
+      "value": "Refresh"
+    },
+    {
+      "name": "run_command_add",
+      "value": "Add command"
+    },
+    {
+      "name": "run_command_stop",
+      "value": "Stop"
+    },
+    {
+      "name": "run_command_cannot_add",
+      "value": "Peer does not support adding commands"
     },
     {
       "name": "protocol_version_newer",

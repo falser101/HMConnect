@@ -16,6 +16,7 @@ import {
 } from './KdeTypes';
 import { DeviceStore } from '../store/DeviceStore';
 import { PluginSettingsStore } from '../store/PluginSettingsStore';
+import { SettingsStore } from '../store/SettingsStore';
 
 /**
  * Facade that wires discovery + multi-device sessions for the app.
@@ -49,6 +50,15 @@ export class KdeService {
 
     await DeviceStore.getInstance().init(context);
     await PluginSettingsStore.getInstance().init(context);
+    await SettingsStore.getInstance().init(context);
+    // Apply user-configured device name if present
+    const customName: string = SettingsStore.getInstance().getDeviceName();
+    if (customName.length > 0) {
+      this.discover.setMyDeviceName(customName);
+      this.client.setMyDeviceName(customName);
+    }
+    // Publish for reactive pages (Index sidebar header etc.)
+    AppStorage.setOrCreate('myDeviceName', this.discover.getMyDeviceName());
     this.client.setContext(context);
     this.client.loadTrustedFromStore();
     this.client.setStatusListener((status: KdeStatus) => {
@@ -511,6 +521,17 @@ export class KdeService {
 
   public getMyName(): string {
     return this.discover.getMyDeviceName();
+  }
+
+  /** Set + persist the local device name (Settings → device name). */
+  public async setMyName(name: string): Promise<void> {
+    await SettingsStore.getInstance().setDeviceName(name);
+    this.discover.setMyDeviceName(name);
+    this.client.setMyDeviceName(name);
+    // Push immediately so every page using @StorageProp('myDeviceName') re-renders
+    AppStorage.setOrCreate('myDeviceName', name);
+    // Re-announce so peers learn the new name
+    this.forceRefresh();
   }
 
   public getMyDeviceId(): string {

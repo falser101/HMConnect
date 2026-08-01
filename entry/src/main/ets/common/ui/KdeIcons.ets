@@ -1,7 +1,7 @@
 import { UiTheme } from './UiTheme';
 
 /**
- * Huawei system symbols ($r('sys.symbol.*')) — reliable across form factors.
+ * Huawei system symbols (sys.symbol resources) — reliable across form factors.
  * Names verified against openharmony id_defined.json.
  */
 export class KdeIconRes {
@@ -11,6 +11,10 @@ export class KdeIconRes {
 
   static arrowBack(): Resource {
     return $r('sys.symbol.chevron_left');
+  }
+
+  static chevronRight(): Resource {
+    return $r('sys.symbol.chevron_right');
   }
 
   static refresh(): Resource {
@@ -152,7 +156,7 @@ export struct KdeIcon {
   @Prop symbol: Resource = $r('sys.symbol.computer');
   /** Avoid naming `size` — conflicts with CustomComponent.size(). */
   @Prop iconSize: number = UiTheme.iconSize;
-  @Prop color: string = UiTheme.iconTint;
+  @Prop color: ResourceColor = UiTheme.iconTint;
 
   build() {
     SymbolGlyph(this.symbol)

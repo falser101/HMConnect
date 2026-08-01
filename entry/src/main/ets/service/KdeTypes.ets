@@ -33,6 +33,25 @@ export const PACKET_TYPE_SYSTEMVOLUME_REQUEST: string = 'kdeconnect.systemvolume
 export const PACKET_TYPE_NOTIFICATION: string = 'kdeconnect.notification';
 export const PACKET_TYPE_NOTIFICATION_REQUEST: string = 'kdeconnect.notification.request';
 
+/**
+ * Remote input (Android MousePadPlugin + MouseReceiverPlugin / RemoteKeyboardPlugin).
+ * One packet type carries both directions; fields decide the meaning.
+ */
+export const PACKET_TYPE_MOUSEPAD_REQUEST: string = 'kdeconnect.mousepad.request';
+/** Remote keyboard availability (state: boolean). */
+export const PACKET_TYPE_MOUSEPAD_KEYBOARDSTATE: string = 'kdeconnect.mousepad.keyboardstate';
+/** Key acknowledgement when sendAck=true (isAck=true). */
+export const PACKET_TYPE_MOUSEPAD_ECHO: string = 'kdeconnect.mousepad.echo';
+
+/** Remote command (Android RunCommandPlugin). */
+export const PACKET_TYPE_RUNCOMMAND: string = 'kdeconnect.runcommand';
+export const PACKET_TYPE_RUNCOMMAND_REQUEST: string = 'kdeconnect.runcommand.request';
+export const PACKET_TYPE_RUNCOMMAND_OUTPUT: string = 'kdeconnect.runcommand.output';
+
+/** Drawing tablet (Android DigitizerPlugin) — this device is the pen surface. */
+export const PACKET_TYPE_DIGITIZER: string = 'kdeconnect.digitizer';
+export const PACKET_TYPE_DIGITIZER_SESSION: string = 'kdeconnect.digitizer.session';
+
 /** Packets this device can receive. */
 export const INCOMING_CAPABILITIES: string[] = [
   'kdeconnect.clipboard',
@@ -46,8 +65,15 @@ export const INCOMING_CAPABILITIES: string[] = [
   'kdeconnect.mpris.request',
   // Control peer system volume (receive sink list / updates)
   PACKET_TYPE_SYSTEMVOLUME,
-  // Receive peer notifications (stage A — send side not yet implemented)
-  PACKET_TYPE_NOTIFICATION
+  // Receive peer notifications (receive-only; we do not forward our own)
+  PACKET_TYPE_NOTIFICATION,
+  // Remote input: desktop may send mouse/keyboard events; we reply keyboardstate
+  PACKET_TYPE_MOUSEPAD_REQUEST,
+  PACKET_TYPE_MOUSEPAD_KEYBOARDSTATE,
+  PACKET_TYPE_MOUSEPAD_ECHO,
+  // Remote command: receive the peer's command list + command output
+  PACKET_TYPE_RUNCOMMAND,
+  PACKET_TYPE_RUNCOMMAND_OUTPUT
 ];
 
 /** Packets this device can send. */
@@ -66,7 +92,14 @@ export const OUTGOING_CAPABILITIES: string[] = [
   'kdeconnect.mpris.request',
   // Adjust peer system volume / mute / default sink
   PACKET_TYPE_SYSTEMVOLUME_REQUEST,
-  PACKET_TYPE_NOTIFICATION_REQUEST
+  // Ask peer to stream its notifications to us (receive-only sync)
+  PACKET_TYPE_NOTIFICATION_REQUEST,
+  // Remote input: we act as touchpad/keyboard for the desktop
+  PACKET_TYPE_MOUSEPAD_REQUEST,
+  PACKET_TYPE_MOUSEPAD_KEYBOARDSTATE,
+  PACKET_TYPE_MOUSEPAD_ECHO,
+  // Remote command: request list / run by key / setup / stop
+  PACKET_TYPE_RUNCOMMAND_REQUEST
 ];
 
 /** @deprecated use INCOMING/OUTGOING; kept for any leftover imports. */
@@ -418,3 +451,162 @@ export interface SystemVolumeSink {
   /** true = default/enabled output (Pulse/Windows "enabled"). */
   enabled: boolean;
 }
+
+/**
+ * kdeconnect.mousepad.request body — mirrors Android MousePadPlugin /
+ * MouseReceiverPlugin / RemoteKeyboardPlugin field-for-field.
+ * All fields optional; the receiver decides meaning by which are present.
+ */
+export interface KdeMousepadRequestBody {
+  dx?: number;
+  dy?: number;
+  x?: number;
+  y?: number;
+  singleclick?: boolean;
+  doubleclick?: boolean;
+  middleclick?: boolean;
+  rightclick?: boolean;
+  forwardclick?: boolean;
+  backclick?: boolean;
+  singlehold?: boolean;
+  singlerelease?: boolean;
+  scroll?: boolean;
+  key?: string;
+  specialKey?: number;
+  shift?: boolean;
+  ctrl?: boolean;
+  alt?: boolean;
+  super?: boolean;
+  sendAck?: boolean;
+}
+
+/** kdeconnect.mousepad.keyboardstate body (remote keyboard availability). */
+export interface KdeMousepadKeyboardStateBody {
+  state: boolean;
+}
+
+/** kdeconnect.mousepad.echo body — key acknowledgement (isAck=true). */
+export interface KdeMousepadEchoBody {
+  key?: string;
+  specialKey?: number;
+  shift?: boolean;
+  ctrl?: boolean;
+  alt?: boolean;
+  isAck: boolean;
+}
+
+/** Modifier keys carried on specialKey packets (Android KeyEvent modifiers). */
+export interface MousepadModifiers {
+  shift?: boolean;
+  ctrl?: boolean;
+  alt?: boolean;
+  super?: boolean;
+}
+
+/** Parsed remote-input event delivered to UI listeners (receiver direction). */
+export interface MousepadInputInfo {
+  /** singleclick | doubleclick | middleclick | rightclick | hold | release | scroll | move | key */
+  kind: string;
+  dx?: number;
+  dy?: number;
+  button?: string;
+  key?: string;
+  specialKey?: number;
+}
+
+/**
+ * kdeconnect.runcommand.request body — mirrors Android RunCommandPlugin.
+ * We are the controller: we ask for the peer's list, run a preset by key,
+ * open its config UI (setup) or stop the running command.
+ */
+export interface KdeRunCommandRequestBody {
+  /** Ask the peer to resend its command list. */
+  requestCommandList?: boolean;
+  /** Run a command on the peer by its preset key. */
+  key?: string;
+  /** Ask the peer to open its runcommand configuration UI. */
+  setup?: boolean;
+  /** Ask the peer to terminate the currently running command. */
+  stop?: boolean;
+}
+
+/** One preset command advertised by the peer (name + command). */
+export interface KdeRunCommandEntry {
+  key: string;
+  name: string;
+  command: string;
+}
+
+/** kdeconnect.runcommand body — the peer's command list. */
+export interface KdeRunCommandListBody {
+  /** JSON map "key" → { name, command } (Android RunCommandPlugin commandList). */
+  commandList?: string;
+  /** True when the peer can open its config UI on setup. */
+  canAddCommand?: boolean;
+}
+
+/** kdeconnect.runcommand.output body — streaming command output. */
+export interface KdeRunCommandOutputBody {
+  stdout?: string[];
+  stderr?: string[];
+  commandFinished?: boolean;
+}
+
+/** RunCommand page stream event: one output line or the finished marker. */
+export interface RunCommandOutputEvent {
+  line: string;
+  isError: boolean;
+  finished: boolean;
+}
+
+/** kdeconnect.digitizer.session body (Android DigitizerPlugin.startSession/endSession). */
+export interface KdeDigitizerSessionBody {
+  /** 'start' or 'end'. */
+  action: string;
+  /** Drawing surface width in px (start only). */
+  width?: number;
+  /** Drawing surface height in px (start only). */
+  height?: number;
+  /** Display density, dots per millimeter (start only). */
+  resolutionX?: number;
+  resolutionY?: number;
+}
+
+/** kdeconnect.digitizer body — one pen/touch event (Android DigitizerPlugin.reportEvent). */
+export interface KdeDigitizerEventBody {
+  /** Tool tracking state (false on lift). */
+  active?: boolean;
+  /** True while the tool contacts the surface. */
+  touching?: boolean;
+  /** 'Pen' or 'Rubber'. */
+  tool?: string;
+  /** X in px on the drawing surface. */
+  x?: number;
+  y?: number;
+  /** Pressure, 0.0–1.0 (Android reports 1.0 for fingers). */
+  pressure?: number;
+}
+
+/**
+ * KDE Connect remote-input special key numbering
+ * (Android KeyListenerView.SpecialKeysMap). 1=DEL, 2=TAB, (3 unused),
+ * 4..7=arrows, 8=PAGE_UP, 9=PAGE_DOWN, 10=HOME, 11=END, 12=ENTER,
+ * 13=FORWARD_DEL, 14=ESC, 15=PRINTSCREEN, 16=SCROLL_LOCK, 21..32=F1..F12.
+ */
+export const MOUSEPAD_SPECIAL_KEY_DEL: number = 1;
+export const MOUSEPAD_SPECIAL_KEY_TAB: number = 2;
+export const MOUSEPAD_SPECIAL_KEY_LEFT: number = 4;
+export const MOUSEPAD_SPECIAL_KEY_UP: number = 5;
+export const MOUSEPAD_SPECIAL_KEY_RIGHT: number = 6;
+export const MOUSEPAD_SPECIAL_KEY_DOWN: number = 7;
+export const MOUSEPAD_SPECIAL_KEY_PAGE_UP: number = 8;
+export const MOUSEPAD_SPECIAL_KEY_PAGE_DOWN: number = 9;
+export const MOUSEPAD_SPECIAL_KEY_HOME: number = 10;
+export const MOUSEPAD_SPECIAL_KEY_END: number = 11;
+export const MOUSEPAD_SPECIAL_KEY_ENTER: number = 12;
+export const MOUSEPAD_SPECIAL_KEY_FORWARD_DEL: number = 13;
+export const MOUSEPAD_SPECIAL_KEY_ESC: number = 14;
+export const MOUSEPAD_SPECIAL_KEY_PRINTSCREEN: number = 15;
+export const MOUSEPAD_SPECIAL_KEY_SCROLL_LOCK: number = 16;
+export const MOUSEPAD_SPECIAL_KEY_F1: number = 21;
+export const MOUSEPAD_SPECIAL_KEY_F12: number = 32;

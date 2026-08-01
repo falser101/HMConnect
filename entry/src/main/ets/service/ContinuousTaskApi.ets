@@ -19,6 +19,7 @@ export interface ContinuousTaskNotification {
   notificationId: number;
   continuousTaskId?: number;
   slotType: notificationManager.SlotType;
+  contentType: notificationManager.ContentType;
 }
 
 /** Minimal shape of ContinuousTaskCancelInfo. */
@@ -37,7 +38,8 @@ export async function startContinuousTaskStringModes(
   const res = await backgroundTaskManager.startBackgroundRunning(context, modes, agent);
   const out: ContinuousTaskNotification = {
     notificationId: res.notificationId,
-    slotType: res.slotType
+    slotType: res.slotType,
+    contentType: res.contentType
   };
   if (res.continuousTaskId !== undefined) {
     out.continuousTaskId = res.continuousTaskId;

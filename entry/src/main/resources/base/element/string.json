@@ -41,6 +41,118 @@
       "value": "用于读取本机媒体播放状态并允许已配对设备远程控制播放（暂停、切歌、进度）"
     },
     {
+      "name": "permission_wifi_reason",
+      "value": "用于获取当前 Wi-Fi 网络以支持可信网络自动配对"
+    },
+    {
+      "name": "settings_title",
+      "value": "设置"
+    },
+    {
+      "name": "settings_save",
+      "value": "保存"
+    },
+    {
+      "name": "settings_connect",
+      "value": "连接"
+    },
+    {
+      "name": "settings_name_dialog_title",
+      "value": "设备名称"
+    },
+    {
+      "name": "settings_name_dialog_hint",
+      "value": "输入设备名称"
+    },
+    {
+      "name": "settings_name_saved",
+      "value": "设备名称已保存"
+    },
+    {
+      "name": "settings_theme_follow",
+      "value": "跟随系统"
+    },
+    {
+      "name": "settings_theme_light",
+      "value": "浅色"
+    },
+    {
+      "name": "settings_theme_dark",
+      "value": "深色"
+    },
+    {
+      "name": "settings_addip_dialog_title",
+      "value": "按 IP 添加设备"
+    },
+    {
+      "name": "settings_addip_ip_hint",
+      "value": "IP 地址"
+    },
+    {
+      "name": "settings_addip_port_hint",
+      "value": "端口（默认 1716）"
+    },
+    {
+      "name": "settings_added_ip_toast",
+      "value": "已尝试连接该设备"
+    },
+    {
+      "name": "settings_exported_toast",
+      "value": "日志已导出"
+    },
+    {
+      "name": "settings_export_failed",
+      "value": "导出失败"
+    },
+    {
+      "name": "trusted_explain",
+      "value": "连接到可信 Wi-Fi 时，收到配对请求将自动接受"
+    },
+    {
+      "name": "trusted_add_current",
+      "value": "添加当前网络"
+    },
+    {
+      "name": "trusted_add_manual",
+      "value": "手动添加"
+    },
+    {
+      "name": "trusted_current_label",
+      "value": "当前网络："
+    },
+    {
+      "name": "trusted_empty",
+      "value": "还没有可信网络"
+    },
+    {
+      "name": "trusted_remove",
+      "value": "移除"
+    },
+    {
+      "name": "trusted_manual_title",
+      "value": "添加可信网络"
+    },
+    {
+      "name": "trusted_manual_hint",
+      "value": "Wi-Fi 名称（SSID）"
+    },
+    {
+      "name": "trusted_confirm",
+      "value": "添加"
+    },
+    {
+      "name": "trusted_no_wifi",
+      "value": "未连接到 Wi-Fi"
+    },
+    {
+      "name": "trusted_already_added",
+      "value": "该网络已在列表中"
+    },
+    {
+      "name": "trusted_added",
+      "value": "已添加可信网络"
+    },
+    {
       "name": "settings_device_name",
       "value": "设备名称"
     },
@@ -157,6 +269,118 @@
       "value": "远程输入"
     },
     {
+      "name": "pref_plugin_remote_input",
+      "value": "远程输入"
+    },
+    {
+      "name": "pref_plugin_remote_input_desc",
+      "value": "将手机用作电脑的触控板和键盘"
+    },
+    {
+      "name": "mousepad_info",
+      "value": "滑动手指移动鼠标指针。点击进行单击，两指/三指点击对应右键与中键，双指滑动滚动，长按拖拽"
+    },
+    {
+      "name": "mousepad_dragging",
+      "value": "拖动中 · 点击结束拖放"
+    },
+    {
+      "name": "mousepad_left_click",
+      "value": "左键"
+    },
+    {
+      "name": "mousepad_middle_click",
+      "value": "中键"
+    },
+    {
+      "name": "mousepad_right_click",
+      "value": "右键"
+    },
+    {
+      "name": "mousepad_menu_right_click",
+      "value": "右键点击"
+    },
+    {
+      "name": "mousepad_menu_middle_click",
+      "value": "中键点击"
+    },
+    {
+      "name": "mousepad_menu_show_keyboard",
+      "value": "显示键盘"
+    },
+    {
+      "name": "mousepad_menu_hide_keyboard",
+      "value": "隐藏键盘"
+    },
+    {
+      "name": "mousepad_menu_settings",
+      "value": "触控板设置"
+    },
+    {
+      "name": "mousepad_compose_send",
+      "value": "发送文本"
+    },
+    {
+      "name": "mousepad_keyboard_not_supported",
+      "value": "配对设备不支持键盘输入"
+    },
+    {
+      "name": "mousepad_keyboard_hint",
+      "value": "在此输入文字，将实时发送到电脑"
+    },
+    {
+      "name": "mousepad_keyboard_placeholder",
+      "value": "向电脑输入…"
+    },
+    {
+      "name": "mousepad_keyboard_enter",
+      "value": "回车"
+    },
+    {
+      "name": "mousepad_connecting",
+      "value": "正在连接设备…"
+    },
+    {
+      "name": "mousepad_not_connected",
+      "value": "设备未连接，无法使用触控板"
+    },
+    {
+      "name": "mousepad_settings_title",
+      "value": "触控板设置"
+    },
+    {
+      "name": "mousepad_settings_section_tap",
+      "value": "点击动作"
+    },
+    {
+      "name": "mousepad_settings_section_pointer",
+      "value": "指针"
+    },
+    {
+      "name": "mousepad_settings_section_scroll",
+      "value": "滚动"
+    },
+    {
+      "name": "mousepad_settings_section_other",
+      "value": "其他"
+    },
+    {
+      "name": "compose_send_title",
+      "value": "发送文本"
+    },
+    {
+      "name": "compose_send_hint",
+      "value": "输入要发送到电脑的文本…"
+    },
+    {
+      "name": "compose_send",
+      "value": "发送"
+    },
+    {
+      "name": "compose_clear",
+      "value": "清除"
+    },
+    {
       "name": "plugin_run_command",
       "value": "运行命令"
     },
@@ -165,8 +389,48 @@
       "value": "演示遥控器"
     },
     {
+      "name": "presentation_prev",
+      "value": "上一页"
+    },
+    {
+      "name": "presentation_next",
+      "value": "下一页"
+    },
+    {
+      "name": "presentation_start",
+      "value": "开始演示"
+    },
+    {
+      "name": "presentation_exit",
+      "value": "退出演示"
+    },
+    {
+      "name": "presentation_not_connected",
+      "value": "设备未连接"
+    },
+    {
+      "name": "presentation_hint",
+      "value": "滑动或点击按钮切换幻灯片"
+    },
+    {
       "name": "plugin_drawing_tablet",
       "value": "用作绘图板"
+    },
+    {
+      "name": "digitizer_tool_pen",
+      "value": "画笔"
+    },
+    {
+      "name": "digitizer_tool_rubber",
+      "value": "橡皮"
+    },
+    {
+      "name": "digitizer_hint",
+      "value": "在画布上绘制，笔迹将实时显示在电脑端"
+    },
+    {
+      "name": "digitizer_not_connected",
+      "value": "设备未连接"
     },
     {
       "name": "plugin_send_clipboard",
@@ -371,6 +635,42 @@
     {
       "name": "plugin_disabled_toast",
       "value": "该插件已对此设备关闭"
+    },
+    {
+      "name": "run_command_not_connected",
+      "value": "未连接设备"
+    },
+    {
+      "name": "run_command_no_commands",
+      "value": "对端设备没有可用命令"
+    },
+    {
+      "name": "run_command_loading",
+      "value": "正在获取命令列表…"
+    },
+    {
+      "name": "run_command_running",
+      "value": "运行中"
+    },
+    {
+      "name": "run_command_output_title",
+      "value": "命令输出"
+    },
+    {
+      "name": "run_command_refresh",
+      "value": "刷新"
+    },
+    {
+      "name": "run_command_add",
+      "value": "添加命令"
+    },
+    {
+      "name": "run_command_stop",
+      "value": "停止"
+    },
+    {
+      "name": "run_command_cannot_add",
+      "value": "对端不支持添加命令"
     },
     {
       "name": "protocol_version_newer",

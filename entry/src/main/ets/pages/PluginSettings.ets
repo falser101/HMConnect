@@ -11,6 +11,7 @@ import {
   PLUGIN_MPRIS,
   PLUGIN_PING,
   PLUGIN_RECEIVE_NOTIFICATIONS,
+  PLUGIN_REMOTE_INPUT,
   PLUGIN_SHARE,
   PLUGIN_SYSTEMVOLUME,
   PluginMeta,
@@ -108,6 +109,9 @@ struct PluginSettings {
     if (key === PLUGIN_RECEIVE_NOTIFICATIONS) {
       return $r('app.string.pref_plugin_receive_notifications');
     }
+    if (key === PLUGIN_REMOTE_INPUT) {
+      return $r('app.string.pref_plugin_remote_input');
+    }
     return $r('app.string.menu_plugin_settings');
   }
 
@@ -135,6 +139,9 @@ struct PluginSettings {
     }
     if (key === PLUGIN_RECEIVE_NOTIFICATIONS) {
       return $r('app.string.pref_plugin_receive_notifications_desc');
+    }
+    if (key === PLUGIN_REMOTE_INPUT) {
+      return $r('app.string.pref_plugin_remote_input_desc');
     }
     return $r('app.string.pref_plugin_clipboard_desc');
   }

@@ -21,6 +21,8 @@ import {
   PLUGIN_FIND_MY_PHONE,
   PLUGIN_MPRIS,
   PLUGIN_PING,
+  PLUGIN_REMOTE_INPUT,
+  PLUGIN_RUNCOMMAND,
   PLUGIN_SHARE,
   isUiButtonForPeer,
   peerSupportsRingMenu,
@@ -94,10 +96,10 @@ struct DeviceDetail {
   private allPluginBtns: PluginButton[] = [
     { label: $r('app.string.plugin_send_files'), symbol: KdeIconRes.fileUpload(), disabled: false, onTap: () => { this.onSendFiles(); }, pluginKey: 'send_files' },
     { label: $r('app.string.plugin_multimedia_control'), symbol: KdeIconRes.music(), disabled: false, onTap: () => { this.openMpris(); }, pluginKey: 'multimedia' },
-    { label: $r('app.string.plugin_remote_input'), symbol: KdeIconRes.touchpad(), disabled: true, pluginKey: 'remote_input' },
-    { label: $r('app.string.plugin_run_command'), symbol: KdeIconRes.terminal(), disabled: true, pluginKey: 'run_command' },
-    { label: $r('app.string.plugin_presentation_remote'), symbol: KdeIconRes.slideshow(), disabled: true, pluginKey: 'presentation' },
-    { label: $r('app.string.plugin_drawing_tablet'), symbol: KdeIconRes.draw(), disabled: true, pluginKey: 'drawing' },
+    { label: $r('app.string.plugin_remote_input'), symbol: KdeIconRes.touchpad(), disabled: false, onTap: () => { this.openRemoteInput(); }, pluginKey: 'remote_input' },
+    { label: $r('app.string.plugin_run_command'), symbol: KdeIconRes.terminal(), disabled: false, onTap: () => { this.openRunCommand(); }, pluginKey: 'run_command' },
+    { label: $r('app.string.plugin_presentation_remote'), symbol: KdeIconRes.slideshow(), disabled: false, onTap: () => { this.openPresentation(); }, pluginKey: 'presentation' },
+    { label: $r('app.string.plugin_drawing_tablet'), symbol: KdeIconRes.draw(), disabled: false, onTap: () => { this.openDigitizer(); }, pluginKey: 'drawing' },
     { label: $r('app.string.plugin_send_clipboard'), symbol: KdeIconRes.contentPaste(), disabled: false, onTap: () => { this.trySendClipboard(); }, pluginKey: 'send_clipboard' },
   ];
 
@@ -408,6 +410,46 @@ struct DeviceDetail {
     if (this.item) {
       const params: DeviceDetailRouteParams = { deviceId: this.item.deviceId };
       pushPage(this.getUIContext(), 'pages/MprisControl', params);
+    }
+  }
+
+  /** Open the touchpad/keyboard page (Android MousePadActivity). */
+  private openRemoteInput(): void {
+    if (!this.isPluginOn(PLUGIN_REMOTE_INPUT)) {
+      this.showToast($r('app.string.plugin_disabled_toast'));
+      return;
+    }
+    if (this.item) {
+      const params: DeviceDetailRouteParams = { deviceId: this.item.deviceId };
+      pushPage(this.getUIContext(), 'pages/RemoteInput', params);
+    }
+  }
+
+  /** Open the run-command page (Android RunCommandActivity). */
+  private openRunCommand(): void {
+    if (!this.isPluginOn(PLUGIN_RUNCOMMAND)) {
+      this.showToast($r('app.string.plugin_disabled_toast'));
+      return;
+    }
+    if (this.item) {
+      const params: DeviceDetailRouteParams = { deviceId: this.item.deviceId };
+      pushPage(this.getUIContext(), 'pages/RunCommand', params);
+    }
+  }
+
+  /** Open the presentation-remote page (Android PresenterActivity). */
+  private openPresentation(): void {
+    if (this.item) {
+      const params: DeviceDetailRouteParams = { deviceId: this.item.deviceId };
+      pushPage(this.getUIContext(), 'pages/Presentation', params);
+    }
+  }
+
+  /** Open the drawing-tablet page (Android DigitizerActivity). */
+  private openDigitizer(): void {
+    if (this.item) {
+      const params: DeviceDetailRouteParams = { deviceId: this.item.deviceId };
+      pushPage(this.getUIContext(), 'pages/Digitizer', params);
     }
   }
 

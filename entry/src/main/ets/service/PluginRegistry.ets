@@ -15,6 +15,13 @@ export const PLUGIN_BATTERY: string = 'battery';
 export const PLUGIN_FIND_MY_PHONE: string = 'findmyphone';
 /** Receive peer notifications (Android ReceiveNotificationsPlugin). Default off. */
 export const PLUGIN_RECEIVE_NOTIFICATIONS: string = 'receivenotifications';
+/**
+ * Remote input (Android MousePadPlugin + MouseReceiverPlugin + RemoteKeyboardPlugin).
+ * Phone acts as touchpad/keyboard for the desktop, and parses desktop input.
+ */
+export const PLUGIN_REMOTE_INPUT: string = 'remoteinput';
+/** Run preset commands on the desktop (Android RunCommandPlugin). */
+export const PLUGIN_RUNCOMMAND: string = 'runcommand';
 
 export interface PluginMeta {
   key: string;
@@ -72,11 +79,37 @@ export const IMPLEMENTED_PLUGINS: PluginMeta[] = [
     outgoingTypes: ['kdeconnect.findmyphone.request']
   },
   {
-    // Android ReceiveNotificationsPlugin — default off
+    // Android ReceiveNotificationsPlugin — default off.
+    // Receive-only: show peer notifications on this device. The outgoing
+    // request triggers the peer to stream its notifications to us.
     key: PLUGIN_RECEIVE_NOTIFICATIONS,
     enabledByDefault: false,
     incomingTypes: ['kdeconnect.notification'],
     outgoingTypes: ['kdeconnect.notification.request']
+  },
+  {
+    // Android MousePadPlugin + MouseReceiverPlugin + RemoteKeyboardPlugin.
+    // We send input to the desktop and parse desktop input back.
+    key: PLUGIN_REMOTE_INPUT,
+    enabledByDefault: true,
+    incomingTypes: [
+      'kdeconnect.mousepad.request',
+      'kdeconnect.mousepad.keyboardstate',
+      'kdeconnect.mousepad.echo'
+    ],
+    outgoingTypes: [
+      'kdeconnect.mousepad.request',
+      'kdeconnect.mousepad.keyboardstate',
+      'kdeconnect.mousepad.echo'
+    ]
+  },
+  {
+    // Android RunCommandPlugin — we list the desktop's preset commands and
+    // run them by key; output streams back as kdeconnect.runcommand.output.
+    key: PLUGIN_RUNCOMMAND,
+    enabledByDefault: true,
+    incomingTypes: ['kdeconnect.runcommand', 'kdeconnect.runcommand.output'],
+    outgoingTypes: ['kdeconnect.runcommand.request']
   }
 ];
 
@@ -126,6 +159,12 @@ export function pluginKeyForUiButton(uiKey: string): string | null {
   }
   if (uiKey === 'send_clipboard') {
     return PLUGIN_CLIPBOARD;
+  }
+  if (uiKey === 'remote_input') {
+    return PLUGIN_REMOTE_INPUT;
+  }
+  if (uiKey === 'run_command') {
+    return PLUGIN_RUNCOMMAND;
   }
   return null;
 }

@@ -1,43 +1,46 @@
-/**
- * Material 3–inspired tokens matching Android KDE Connect (DynamicColors light defaults).
- * KDE brand accent from launcher_background: #3daee9
- */
+import { common } from '@kit.AbilityKit';
 
+/**
+ * Material 3–inspired tokens matching Android KDE Connect.
+ * Colors are resource-qualified ($r('app.color.*')) so they follow the
+ * app's color mode: `setColorMode(COLOR_MODE_DARK)` → resources/dark palette,
+ * COLOR_MODE_LIGHT → base palette, NOT_SET → system.
+ */
 export class UiTheme {
   // Brand
-  static readonly kdeBlue: string = '#3DAEE9';
-  static readonly primary: string = '#1A73E8';
-  static readonly onPrimary: string = '#FFFFFF';
-  static readonly primaryContainer: string = '#D2E3FC';
-  static readonly onPrimaryContainer: string = '#041E49';
+  static readonly kdeBlue: Resource = $r('app.color.theme_kde_blue');
+  static readonly primary: Resource = $r('app.color.theme_primary');
+  static readonly onPrimary: Resource = $r('app.color.theme_on_primary');
+  static readonly primaryContainer: Resource = $r('app.color.theme_primary_container');
+  static readonly onPrimaryContainer: Resource = $r('app.color.theme_on_primary_container');
 
-  // Surfaces (M3 light)
-  static readonly pageBg: string = '#FDFBFF';
-  static readonly surface: string = '#FDFBFF';
-  static readonly surfaceVariant: string = '#E7E0EC';
-  static readonly cardBg: string = '#FFFFFF';
-  static readonly cardElevated: string = '#FFFFFF';
-  static readonly sidebarBg: string = '#F7F2FA';
-  static readonly divider: string = '#CAC4D0';
-  static readonly scrim: string = '#99000000';
-  static readonly ripple: string = '#1F000000';
+  // Surfaces
+  static readonly pageBg: Resource = $r('app.color.theme_page_bg');
+  static readonly surface: Resource = $r('app.color.theme_surface');
+  static readonly surfaceVariant: Resource = $r('app.color.theme_surface_variant');
+  static readonly cardBg: Resource = $r('app.color.theme_card_bg');
+  static readonly cardElevated: Resource = $r('app.color.theme_card_elevated');
+  static readonly sidebarBg: Resource = $r('app.color.theme_sidebar_bg');
+  static readonly divider: Resource = $r('app.color.theme_divider');
+  static readonly scrim: Resource = $r('app.color.theme_scrim');
+  static readonly ripple: Resource = $r('app.color.theme_ripple');
 
   // Text
-  static readonly onSurface: string = '#1C1B1F';
-  static readonly onSurfaceVariant: string = '#49454F';
-  static readonly outline: string = '#79747E';
-  static readonly textMuted: string = '#79747E';
+  static readonly onSurface: Resource = $r('app.color.theme_on_surface');
+  static readonly onSurfaceVariant: Resource = $r('app.color.theme_on_surface_variant');
+  static readonly outline: Resource = $r('app.color.theme_outline');
+  static readonly textMuted: Resource = $r('app.color.theme_text_muted');
 
-  // Semantic (Android summary red #CC2222)
-  static readonly danger: string = '#CC2222';
-  static readonly error: string = '#B3261E';
-  static readonly success: string = '#1B8A4A';
-  static readonly findPhone: string = '#C62828';
-  static readonly findPhoneDark: string = '#B71C1C';
+  // Semantic
+  static readonly danger: Resource = $r('app.color.theme_danger');
+  static readonly error: Resource = $r('app.color.theme_error');
+  static readonly success: Resource = $r('app.color.theme_success');
+  static readonly findPhone: Resource = $r('app.color.theme_find_phone');
+  static readonly findPhoneDark: Resource = $r('app.color.theme_find_phone_dark');
 
   // Icon
-  static readonly iconTint: string = '#49454F';
-  static readonly iconOnSurface: string = '#1C1B1F';
+  static readonly iconTint: Resource = $r('app.color.theme_icon_tint');
+  static readonly iconOnSurface: Resource = $r('app.color.theme_icon_on_surface');
 
   // Elevation / radius (Material 3 card)
   static readonly radiusCard: number = 12;
@@ -68,4 +71,15 @@ export class UiTheme {
   static readonly bodyMd: number = 14;
   static readonly bodySm: number = 12;
   static readonly labelMd: number = 14;
+}
+
+/** Resolve a color resource to a '#RRGGBB' css string (for window/system-bar APIs). */
+export function cssColor(ctx: common.Context, res: Resource): string {
+  try {
+    const v: number = ctx.resourceManager.getColorSync(res.id);
+    const rgb: string = (v & 0xFFFFFF).toString(16).padStart(6, '0');
+    return `#${rgb}`;
+  } catch (_e) {
+    return '#000000';
+  }
 }

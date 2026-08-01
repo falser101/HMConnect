@@ -2,10 +2,16 @@
   "src": [
     "pages/Index",
     "pages/DeviceDetail",
+    "pages/Digitizer",
     "pages/Settings",
     "pages/About",
     "pages/FindMyPhone",
     "pages/MprisControl",
-    "pages/PluginSettings"
+    "pages/PluginSettings",
+    "pages/Presentation",
+    "pages/RemoteInput",
+    "pages/RemoteInputCompose",
+    "pages/RunCommand",
+    "pages/TrustedNetworks"
   ]
 }

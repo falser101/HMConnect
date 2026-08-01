@@ -5,6 +5,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { AppNotifier } from '../common/AppNotifier';
 import { AppSession } from '../app/AppSession';
 import { DeviceListItem } from './KdeTypes';
+import { SettingsStore } from '../store/SettingsStore';
 import {
   ContinuousTaskCancelInfo,
   ContinuousTaskNotification,
@@ -81,6 +82,14 @@ export class KdeBackgroundService {
     // Do not show persistent / progress banners (user request); cancel any leftover.
     AppNotifier.getInstance().cancelPersistent();
     this.cancelProgressBanner();
+    // Remove any app-owned notification left by previous sessions (e.g. the
+    // long-running-task relocation banner). The system task banner is not ours
+    // and is untouched by cancelAll.
+    try {
+      notificationManager.cancelAll();
+    } catch (_e) {
+      // ignore
+    }
 
     this.deviceSubId = AppSession.getInstance().subscribeDevices(() => {
       // Re-assert keep-alive when devices go online (task may have been cancelled while idle)
@@ -138,6 +147,34 @@ export class KdeBackgroundService {
       return;
     }
     await this.forceRestartContinuousTask();
+  }
+
+  /**
+   * Settings → persistent notification toggle.
+   * ON: (re)start the continuous task (system banner + keep-alive).
+   * OFF: stop it (no banner; background keep-alive weakens).
+   */
+  public async setKeepAliveEnabled(enabled: boolean): Promise<void> {
+    if (!this.context) {
+      return;
+    }
+    if (enabled) {
+      console.info('[BgSvc] keep-alive enabled by settings');
+      await this.reassertKeepAlive();
+      return;
+    }
+    console.info('[BgSvc] keep-alive disabled by settings — stopping continuous task');
+    this.taskActive = false;
+    this.stopProgressTimer();
+    if (this.retryTimer !== -1) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = -1;
+    }
+    try {
+      await stopContinuousTask(this.context);
+    } catch (_e) {
+      // best effort
+    }
   }
 
   /**
@@ -207,6 +244,10 @@ export class KdeBackgroundService {
    */
   private async ensureContinuousTask(): Promise<void> {
     if (!this.context) {
+      return;
+    }
+    if (!SettingsStore.getInstance().isPersistentNotification()) {
+      console.info('[BgSvc] continuous task disabled by settings (persistent notification off)');
       return;
     }
     if (!canIUse('SystemCapability.ResourceSchedule.BackgroundTaskManager.ContinuousTask')) {
@@ -322,6 +363,7 @@ export class KdeBackgroundService {
     this.taskSlotType = res.slotType;
     console.info(
       `[BgSvc] continuous task started (dataTransfer) notificationId=${res.notificationId}` +
+        ` slotType=${res.slotType} contentType=${res.contentType}` +
         (res.continuousTaskId !== undefined ? ` taskId=${res.continuousTaskId}` : '')
     );
     this.ensureProgressTimer();

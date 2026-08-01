@@ -3,6 +3,7 @@ import pasteboard from '@ohos.pasteboard';
 import { fileIo, picker, fileUri } from '@kit.CoreFileKit';
 import { common } from '@kit.AbilityKit';
 import { avSession } from '@kit.AVSessionKit';
+import { wifiManager } from '@kit.ConnectivityKit';
 import { AppNotifier } from '../common/AppNotifier';
 import {
   KdeDevice,
@@ -34,8 +35,28 @@ import {
   PACKET_TYPE_SYSTEMVOLUME_REQUEST,
   PACKET_TYPE_NOTIFICATION,
   PACKET_TYPE_NOTIFICATION_REQUEST,
+  PACKET_TYPE_MOUSEPAD_REQUEST,
+  PACKET_TYPE_MOUSEPAD_KEYBOARDSTATE,
+  PACKET_TYPE_MOUSEPAD_ECHO,
+  PACKET_TYPE_RUNCOMMAND,
+  PACKET_TYPE_RUNCOMMAND_REQUEST,
+  PACKET_TYPE_RUNCOMMAND_OUTPUT,
+  PACKET_TYPE_DIGITIZER,
+  PACKET_TYPE_DIGITIZER_SESSION,
   KdeNotificationBody,
   KdeNotificationRequestBody,
+  KdeMousepadRequestBody,
+  KdeMousepadKeyboardStateBody,
+  KdeMousepadEchoBody,
+  MousepadInputInfo,
+  MousepadModifiers,
+  KdeDigitizerSessionBody,
+  KdeDigitizerEventBody,
+  KdeRunCommandRequestBody,
+  KdeRunCommandEntry,
+  KdeRunCommandListBody,
+  KdeRunCommandOutputBody,
+  RunCommandOutputEvent,
   FileTransferNotifyInfo,
   FileTransferResultInfo,
   TransferCancelToken,
@@ -49,6 +70,7 @@ import {
 } from './KdeTypes';
 import { DeviceStore } from '../store/DeviceStore';
 import { PluginSettingsStore } from '../store/PluginSettingsStore';
+import { SettingsStore } from '../store/SettingsStore';
 import {
   PLUGIN_BATTERY,
   PLUGIN_CLIPBOARD,
@@ -56,6 +78,8 @@ import {
   PLUGIN_MPRIS,
   PLUGIN_PING,
   PLUGIN_RECEIVE_NOTIFICATIONS,
+  PLUGIN_REMOTE_INPUT,
+  PLUGIN_RUNCOMMAND,
   PLUGIN_SHARE,
   PLUGIN_SYSTEMVOLUME,
   pluginKeyForPacketType
@@ -172,6 +196,22 @@ export class DeviceSession implements SystemMediaExporter {
   /** Remote system volume sinks (Android SystemVolumePlugin). */
   private systemVolumeSinks: SystemVolumeSink[] = [];
   private onSystemVolumeChange?: (sinks: SystemVolumeSink[]) => void;
+  /**
+   * Remote keyboard availability (Android MousePadPlugin.isKeyboardEnabled,
+   * driven by kdeconnect.mousepad.keyboardstate). Default true until peer says no.
+   */
+  private mousepadKeyboardEnabled: boolean = true;
+  private onMousepadKeyboardStateChange?: (enabled: boolean) => void;
+  /** Live feedback for inbound desktop input (RemoteInput page). */
+  private onMousepadInput?: (info: MousepadInputInfo) => void;
+  /** Peer's runcommand presets (Android RunCommandPlugin commandList). */
+  private remoteCommands: KdeRunCommandEntry[] = [];
+  /** True once the peer has ever sent its command list. */
+  private remoteCommandsLoaded: boolean = false;
+  /** Peer can open its runcommand config UI on setup (canAddCommand). */
+  private canAddRemoteCommand: boolean = false;
+  private onRunCommandListChange?: (entries: KdeRunCommandEntry[]) => void;
+  private onRunCommandOutput?: (event: RunCommandOutputEvent) => void;
   /** AVSession for lock-screen remote control (peer media → local card). */
   private mprisSession: avSession.AVSession | null = null;
   private mprisController: avSession.AVSessionController | null = null;
@@ -2788,6 +2828,8 @@ export class DeviceSession implements SystemMediaExporter {
           );
           this.notifySessionChange();
           console.info('[KDE-MVP] Peer requested pairing, showing notification');
+          // Android TrustedNetworks: auto-accept when on a trusted WiFi network
+          this.tryAutoAcceptOnTrustedNetwork();
           AppNotifier.getInstance().notifyPairRequest(
             this.peerDevice?.deviceName ?? '未知设备',
             this.peerDevice?.deviceId ?? ''
@@ -2924,11 +2966,123 @@ export class DeviceSession implements SystemMediaExporter {
       return;
     }
 
-    if (type === PACKET_TYPE_NOTIFICATION_REQUEST) {
-      // Receive-only stage: we do not send our notifications yet.
-      // Ignore request/cancel from peer aimed at a send plugin.
-      console.info('[KDE-MVP] notification.request ignored (send plugin not implemented)');
+    if (type === PACKET_TYPE_MOUSEPAD_KEYBOARDSTATE) {
+      this.handleMousepadKeyboardState(body as KdeMousepadKeyboardStateBody);
       return;
+    }
+
+    if (type === PACKET_TYPE_MOUSEPAD_ECHO) {
+      this.handleMousepadEcho(body as KdeMousepadEchoBody);
+      return;
+    }
+
+    if (type === PACKET_TYPE_MOUSEPAD_REQUEST) {
+      this.handleMousepadRequest(body as KdeMousepadRequestBody);
+      return;
+    }
+
+    if (type === PACKET_TYPE_RUNCOMMAND) {
+      this.handleRunCommandPacket(body as KdeRunCommandListBody);
+      return;
+    }
+
+    if (type === PACKET_TYPE_RUNCOMMAND_OUTPUT) {
+      this.handleRunCommandOutput(body as KdeRunCommandOutputBody);
+      return;
+    }
+  }
+
+  /**
+   * kdeconnect.mousepad.keyboardstate from the desktop's remote-keyboard plugin.
+   * Tracks whether this peer supports key injection (Android MousePadPlugin.onPacketReceived).
+   */
+  private handleMousepadKeyboardState(body: KdeMousepadKeyboardStateBody): void {
+    if (!body || typeof body.state !== 'boolean') {
+      return;
+    }
+    this.mousepadKeyboardEnabled = body.state;
+    console.info(`[KDE-MVP] Peer mousepad keyboard state: ${this.mousepadKeyboardEnabled}`);
+    if (this.onMousepadKeyboardStateChange) {
+      this.onMousepadKeyboardStateChange(this.mousepadKeyboardEnabled);
+    }
+  }
+
+  /**
+   * kdeconnect.mousepad.echo — desktop acknowledged a key we sent with sendAck=true.
+   * Only logged + forwarded to the UI (Android RemoteKeyboardPlugin echo handling).
+   */
+  private handleMousepadEcho(body: KdeMousepadEchoBody): void {
+    const key = body.key ?? '';
+    const special = body.specialKey ?? 0;
+    console.info(`[KDE-MVP] Mousepad echo ack key="${key}" specialKey=${special}`);
+    if (this.onMousepadInput) {
+      const info: MousepadInputInfo = { kind: 'key', key: key, specialKey: special };
+      this.onMousepadInput(info);
+    }
+  }
+
+  /**
+   * kdeconnect.mousepad.request FROM the desktop (phone receives input).
+   * Protocol-level only — HarmonyOS third-party apps cannot inject global
+   * touch/keyboard input like Android AccessibilityService, so we parse and
+   * surface the events (UI feedback + throttled notification).
+   */
+  private handleMousepadRequest(body: KdeMousepadRequestBody): void {
+    if (!body) {
+      return;
+    }
+    const peerName: string = this.peerDevice?.deviceName ?? '电脑';
+    // Keyboard-style packet (Android RemoteKeyboardPlugin takes key/specialKey)
+    if (typeof body.key === 'string' && body.key.length > 0) {
+      const info: MousepadInputInfo = { kind: 'key', key: body.key };
+      if (this.onMousepadInput) {
+        this.onMousepadInput(info);
+      }
+      return;
+    }
+    if (typeof body.specialKey === 'number') {
+      const info: MousepadInputInfo = { kind: 'key', specialKey: body.specialKey };
+      if (this.onMousepadInput) {
+        this.onMousepadInput(info);
+      }
+      return;
+    }
+    // Mouse-style packet (Android MouseReceiverPlugin)
+    let kind: string = 'move';
+    let button: string = '';
+    if (body.singleclick === true) {
+      kind = 'click';
+      button = 'left';
+    } else if (body.doubleclick === true) {
+      kind = 'click';
+      button = 'double';
+    } else if (body.middleclick === true) {
+      kind = 'click';
+      button = 'middle';
+    } else if (body.rightclick === true) {
+      kind = 'click';
+      button = 'right';
+    } else if (body.singlehold === true) {
+      kind = 'hold';
+    } else if (body.singlerelease === true) {
+      kind = 'release';
+    } else if (body.scroll === true) {
+      kind = 'scroll';
+    }
+    const info: MousepadInputInfo = {
+      kind: kind,
+      button: button,
+      dx: typeof body.dx === 'number' ? body.dx : undefined,
+      dy: typeof body.dy === 'number' ? body.dy : undefined
+    };
+    if (this.onMousepadInput) {
+      this.onMousepadInput(info);
+    }
+    if (kind === 'click') {
+      console.info(`[KDE-MVP] Desktop ${peerName} clicked ${button} on this device`);
+      AppNotifier.getInstance().notifyRemoteInput(peerName, button).catch((e: Error) => {
+        console.error('[KDE-MVP] remote-input notify failed:', e.message);
+      });
     }
   }
 
@@ -3623,6 +3777,345 @@ export class DeviceSession implements SystemMediaExporter {
     });
   }
 
+  // ── REMOTE INPUT (Android MousePadPlugin) ─────────────────
+
+  public getMousepadKeyboardEnabled(): boolean {
+    return this.mousepadKeyboardEnabled;
+  }
+
+  public setMousepadKeyboardStateListener(cb: (enabled: boolean) => void): void {
+    this.onMousepadKeyboardStateChange = cb;
+  }
+
+  /** Live inbound desktop-input feedback (RemoteInput page cursor / clicks). */
+  public setMousepadInputListener(cb: (info: MousepadInputInfo) => void): void {
+    this.onMousepadInput = cb;
+  }
+
+  /**
+   * Low-level sender — all mousepad packets funnel through here
+   * (Android MousePadPlugin.sendPacket). Gated by plugin + TLS.
+   */
+  public sendMousepadPacket(body: KdeMousepadRequestBody): void {
+    if (!this.isPluginEnabled(PLUGIN_REMOTE_INPUT)) {
+      console.info('[KDE-MVP] mousepad: plugin disabled for peer');
+      return;
+    }
+    if (!this.isTlsLive()) {
+      console.warn('[KDE-MVP] mousepad: TLS not live, packet dropped');
+      return;
+    }
+    const json: string = serializePacket(PACKET_TYPE_MOUSEPAD_REQUEST, body);
+    this.sendTls(json, (err: Error | null) => {
+      if (err) {
+        console.error('[KDE-MVP] mousepad send failed:', err.message);
+      }
+    });
+  }
+
+  /** Relative mouse move (Android MousePadPlugin.sendMouseDelta). */
+  public sendMousepadDelta(dx: number, dy: number): void {
+    const body: KdeMousepadRequestBody = { dx: dx, dy: dy };
+    this.sendMousepadPacket(body);
+  }
+
+  public sendMousepadLeftClick(): void {
+    this.sendMousepadPacket({ singleclick: true });
+  }
+
+  public sendMousepadRightClick(): void {
+    this.sendMousepadPacket({ rightclick: true });
+  }
+
+  public sendMousepadMiddleClick(): void {
+    this.sendMousepadPacket({ middleclick: true });
+  }
+
+  public sendMousepadDoubleClick(): void {
+    this.sendMousepadPacket({ doubleclick: true });
+  }
+
+  /** Long-press drag start (Android MousePadPlugin.sendSingleHold). */
+  public sendMousepadSingleHold(): void {
+    this.sendMousepadPacket({ singlehold: true });
+  }
+
+  /** Drag end (Android MousePadPlugin.sendSingleRelease). */
+  public sendMousepadSingleRelease(): void {
+    this.sendMousepadPacket({ singlerelease: true });
+  }
+
+  /** Two-finger scroll (Android MousePadPlugin.sendScroll). */
+  public sendMousepadScroll(dx: number, dy: number): void {
+    const body: KdeMousepadRequestBody = { scroll: true, dx: dx, dy: dy };
+    this.sendMousepadPacket(body);
+  }
+
+  /** Visible text/char to type on the desktop (Android sendText). */
+  public sendMousepadKey(text: string): void {
+    if (!text || text.length === 0) {
+      return;
+    }
+    const body: KdeMousepadRequestBody = { key: text };
+    this.sendMousepadPacket(body);
+  }
+
+  /**
+   * Special key (Android KeyListenerView SpecialKeysMap → specialKey).
+   * modifiers: shift / ctrl / alt / super booleans.
+   */
+  public sendMousepadSpecialKey(
+    specialKey: number,
+    modifiers: MousepadModifiers
+  ): void {
+    const body: KdeMousepadRequestBody = { specialKey: specialKey };
+    if (modifiers.shift) {
+      body.shift = true;
+    }
+    if (modifiers.ctrl) {
+      body.ctrl = true;
+    }
+    if (modifiers.alt) {
+      body.alt = true;
+    }
+    if (modifiers.super) {
+      body.super = true;
+    }
+    this.sendMousepadPacket(body);
+  }
+
+  /** Remote keyboard availability (Android RemoteKeyboardPlugin → keyboardstate). */
+  public sendMousepadKeyboardState(state: boolean): void {
+    if (!this.isPluginEnabled(PLUGIN_REMOTE_INPUT)) {
+      return;
+    }
+    if (!this.isTlsLive()) {
+      return;
+    }
+    const body: KdeMousepadKeyboardStateBody = { state: state };
+    const json: string = serializePacket(PACKET_TYPE_MOUSEPAD_KEYBOARDSTATE, body);
+    this.sendTls(json, (err: Error | null) => {
+      if (err) {
+        console.error('[KDE-MVP] mousepad keyboardstate send failed:', err.message);
+      }
+    });
+  }
+
+  // ── DIGITIZER (Android DigitizerPlugin — this device is the pen surface) ──
+
+  /**
+   * Announce the drawing surface to the peer (Android DigitizerPlugin.startSession).
+   * width/height in px, resolution in dots per mm.
+   */
+  public sendDigitizerSession(
+    width: number,
+    height: number,
+    resolutionX: number,
+    resolutionY: number
+  ): void {
+    if (!this.isTlsLive()) {
+      console.warn('[KDE-MVP] digitizer session: TLS not live, dropped');
+      return;
+    }
+    const body: KdeDigitizerSessionBody = {
+      action: 'start',
+      width: width,
+      height: height,
+      resolutionX: resolutionX,
+      resolutionY: resolutionY
+    };
+    const json: string = serializePacket(PACKET_TYPE_DIGITIZER_SESSION, body);
+    this.sendTls(json, (err: Error | null) => {
+      if (err) {
+        console.error('[KDE-MVP] digitizer session send failed:', err.message);
+      }
+    });
+  }
+
+  /** End the drawing session (Android DigitizerPlugin.endSession). */
+  public sendDigitizerEndSession(): void {
+    const body: KdeDigitizerSessionBody = { action: 'end' };
+    const json: string = serializePacket(PACKET_TYPE_DIGITIZER_SESSION, body);
+    this.sendTls(json, (err: Error | null) => {
+      if (err) {
+        console.error('[KDE-MVP] digitizer endSession send failed:', err.message);
+      }
+    });
+  }
+
+  /** One pen/touch event (Android DigitizerPlugin.reportEvent). */
+  public sendDigitizerEvent(body: KdeDigitizerEventBody): void {
+    if (!this.isTlsLive()) {
+      return;
+    }
+    const json: string = serializePacket(PACKET_TYPE_DIGITIZER, body);
+    this.sendTls(json, (err: Error | null) => {
+      if (err) {
+        console.error('[KDE-MVP] digitizer event send failed:', err.message);
+      }
+    });
+  }
+
+  // ── REMOTE COMMAND (Android RunCommandPlugin) ─────────────
+
+  /** Peer's runcommand presets (sorted by name). */
+  public getRunCommandEntries(): KdeRunCommandEntry[] {
+    return this.remoteCommands.slice();
+  }
+
+  /** Peer can open its runcommand config UI on setup (canAddCommand). */
+  public getCanAddRemoteCommand(): boolean {
+    return this.canAddRemoteCommand;
+  }
+
+  public setRunCommandListListener(cb: (entries: KdeRunCommandEntry[]) => void): void {
+    this.onRunCommandListChange = cb;
+  }
+
+  public setRunCommandOutputListener(cb: (event: RunCommandOutputEvent) => void): void {
+    this.onRunCommandOutput = cb;
+  }
+
+  /** Ask the peer to resend its command list (Android requestCommandList). */
+  public requestRunCommandList(): void {
+    if (!this.isPluginEnabled(PLUGIN_RUNCOMMAND) || !this.isTlsLive()) {
+      console.info('[KDE-MVP] runcommand request skipped (plugin off or not live)');
+      return;
+    }
+    const body: KdeRunCommandRequestBody = { requestCommandList: true };
+    const json: string = serializePacket(PACKET_TYPE_RUNCOMMAND_REQUEST, body);
+    console.info('[KDE-MVP] runcommand requestCommandList sent');
+    this.sendTls(json, (err: Error | null) => {
+      if (err) {
+        console.error('[KDE-MVP] runcommand request failed:', err.message);
+      }
+    });
+  }
+
+  /** Run a preset command on the peer by key (Android runCommand). */
+  public runCommandOnPeer(key: string): void {
+    if (!this.isPluginEnabled(PLUGIN_RUNCOMMAND) || !this.isTlsLive()) {
+      console.info('[KDE-MVP] runcommand run skipped (plugin off or not live)');
+      return;
+    }
+    if (key.length === 0) {
+      return;
+    }
+    const body: KdeRunCommandRequestBody = { key: key };
+    const json: string = serializePacket(PACKET_TYPE_RUNCOMMAND_REQUEST, body);
+    console.info(`[KDE-MVP] runcommand run key=${key}`);
+    this.sendTls(json, (err: Error | null) => {
+      if (err) {
+        console.error('[KDE-MVP] runcommand run failed:', err.message);
+      }
+    });
+  }
+
+  /** Ask the peer to open its runcommand config UI (Android sendSetupPacket). */
+  public setupRunCommandOnPeer(): void {
+    if (!this.isPluginEnabled(PLUGIN_RUNCOMMAND) || !this.isTlsLive()) {
+      console.info('[KDE-MVP] runcommand setup skipped (plugin off or not live)');
+      return;
+    }
+    const body: KdeRunCommandRequestBody = { setup: true };
+    const json: string = serializePacket(PACKET_TYPE_RUNCOMMAND_REQUEST, body);
+    console.info('[KDE-MVP] runcommand setup sent');
+    this.sendTls(json, (err: Error | null) => {
+      if (err) {
+        console.error('[KDE-MVP] runcommand setup failed:', err.message);
+      }
+    });
+  }
+
+  /** Ask the peer to stop the running command (Android sendStop). */
+  public stopRunCommandOnPeer(): void {
+    if (!this.isPluginEnabled(PLUGIN_RUNCOMMAND) || !this.isTlsLive()) {
+      return;
+    }
+    const body: KdeRunCommandRequestBody = { stop: true };
+    const json: string = serializePacket(PACKET_TYPE_RUNCOMMAND_REQUEST, body);
+    this.sendTls(json, (err: Error | null) => {
+      if (err) {
+        console.error('[KDE-MVP] runcommand stop failed:', err.message);
+      }
+    });
+  }
+
+  /** kdeconnect.runcommand from the peer — its preset command list. */
+  private handleRunCommandPacket(body: KdeRunCommandListBody): void {
+    // Store canAddCommand BEFORE notifying the list listener (same packet carries
+    // both; the page reads this flag when the list updates).
+    if (body.canAddCommand === true) {
+      this.canAddRemoteCommand = true;
+      console.info('[KDE-MVP] runcommand canAddCommand=true');
+    }
+    if (body.commandList !== undefined && body.commandList !== null && body.commandList.length > 0) {
+      console.info(`[KDE-MVP] runcommand list received (${body.commandList.length} chars)`);
+      this.parseRemoteCommandList(body.commandList);
+    }
+  }
+
+  private parseRemoteCommandList(json: string): void {
+    const entries: KdeRunCommandEntry[] = [];
+    try {
+      const raw: Record<string, Object> = JSON.parse(json) as Record<string, Object>;
+      const keys: string[] = Object.keys(raw);
+      for (let i = 0; i < keys.length; i++) {
+        const key: string = keys[i];
+        const value: Object | undefined = raw[key];
+        if (value === undefined || value === null) {
+          continue;
+        }
+        const obj: Record<string, Object> = value as Record<string, Object>;
+        const name: string = typeof obj['name'] === 'string' ? obj['name'] as string : key;
+        const command: string = typeof obj['command'] === 'string' ? obj['command'] as string : '';
+        if (command.length > 0) {
+          const entry: KdeRunCommandEntry = { key: key, name: name, command: command };
+          entries.push(entry);
+        }
+      }
+    } catch (_e) {
+      console.warn('[KDE-MVP] runcommand list parse failed');
+    }
+    entries.sort((a: KdeRunCommandEntry, b: KdeRunCommandEntry) => a.name.localeCompare(b.name));
+    this.remoteCommands = entries;
+    this.remoteCommandsLoaded = true;
+    console.info(`[KDE-MVP] runcommand parsed ${entries.length} commands`);
+    if (this.onRunCommandListChange) {
+      this.onRunCommandListChange(this.getRunCommandEntries());
+    }
+  }
+
+  /** kdeconnect.runcommand.output from the peer — streaming command output. */
+  private handleRunCommandOutput(body: KdeRunCommandOutputBody): void {
+    if (body.stdout !== undefined && body.stdout !== null) {
+      console.info(`[KDE-MVP] runcommand output stdout lines=${body.stdout.length}`);
+      for (let i = 0; i < body.stdout.length; i++) {
+        this.dispatchRunCommandLine(body.stdout[i], false);
+      }
+    }
+    if (body.stderr !== undefined && body.stderr !== null) {
+      console.info(`[KDE-MVP] runcommand output stderr lines=${body.stderr.length}`);
+      for (let i = 0; i < body.stderr.length; i++) {
+        this.dispatchRunCommandLine(body.stderr[i], true);
+      }
+    }
+    if (body.commandFinished === true) {
+      console.info('[KDE-MVP] runcommand output commandFinished');
+      if (this.onRunCommandOutput) {
+        const ev: RunCommandOutputEvent = { line: '', isError: false, finished: true };
+        this.onRunCommandOutput(ev);
+      }
+    }
+  }
+
+  private dispatchRunCommandLine(line: string, isError: boolean): void {
+    if (this.onRunCommandOutput) {
+      const ev: RunCommandOutputEvent = { line: line, isError: isError, finished: false };
+      this.onRunCommandOutput(ev);
+    }
+  }
+
   /**
    * Send plain text as clipboard (no READ_PASTEBOARD — avoid system getData).
    * UI should collect text via TextInput or system paste into the field.
@@ -3670,6 +4163,25 @@ export class DeviceSession implements SystemMediaExporter {
   /** Whether peer has requested pairing (for UI accept/reject). */
   public isPairRequestedByPeer(): boolean {
     return this.pairRequestedByPeer;
+  }
+
+  /**
+   * Android TrustedNetworks: if the current WiFi SSID is in the trusted list,
+   * accept the incoming pair request automatically (no user prompt).
+   */
+  private tryAutoAcceptOnTrustedNetwork(): void {
+    wifiManager.getLinkedInfo().then((info: wifiManager.WifiLinkedInfo) => {
+      const ssid: string = info.ssid ?? '';
+      if (ssid.length === 0) {
+        return;
+      }
+      if (SettingsStore.getInstance().isTrustedNetwork(ssid)) {
+        console.info(`[KDE-MVP] On trusted network "${ssid}" — auto-accepting pair request`);
+        this.acceptPairing();
+      }
+    }).catch((_e: Error) => {
+      // no wifi / permission — leave manual acceptance
+    });
   }
 
   /** Accept incoming pair request (from notification action). */

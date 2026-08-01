@@ -71,6 +71,14 @@
         }
       },
       {
+        "name": "ohos.permission.GET_WIFI_INFO",
+        "reason": "$string:permission_wifi_reason",
+        "usedScene": {
+          "abilities": ["EntryAbility"],
+          "when": "inuse"
+        }
+      },
+      {
         "name": "ohos.permission.VIBRATE",
         "reason": "$string:permission_vibrate_reason",
         "usedScene": {

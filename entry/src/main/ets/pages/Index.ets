@@ -22,7 +22,7 @@ struct Index {
   @State availableList: DeviceListItem[] = [];
   @State rememberedList: DeviceListItem[] = [];
   @State statusText: string = '';
-  @State myName: string = '';
+  @StorageProp('myDeviceName') myName: string = '';
   @State sidebarOpen: boolean = false;
   /** Drawer panel X offset in vp; 0 = open, negative = off-screen left. */
   @State drawerPx: number = -320;
@@ -43,7 +43,6 @@ struct Index {
     let ctx: common.UIAbilityContext | undefined = hostContext(this.getUIContext());
     if (ctx) {
       this.session.ensureStarted(ctx).then(() => {
-        this.myName = this.session.getService().getMyName();
         this.applyDevices(this.session.getLastDevices());
         this.applyStatus(this.session.getLastStatus());
       });

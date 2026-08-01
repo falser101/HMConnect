@@ -31,6 +31,106 @@
     {
       "name": "accent_danger",
       "value": "#F2B8B5"
+    },
+    {
+      "name": "theme_kde_blue",
+      "value": "#3DAEE9"
+    },
+    {
+      "name": "theme_primary",
+      "value": "#A8C7FA"
+    },
+    {
+      "name": "theme_on_primary",
+      "value": "#041E49"
+    },
+    {
+      "name": "theme_primary_container",
+      "value": "#0842A0"
+    },
+    {
+      "name": "theme_on_primary_container",
+      "value": "#D2E3FC"
+    },
+    {
+      "name": "theme_page_bg",
+      "value": "#1C1B1F"
+    },
+    {
+      "name": "theme_surface",
+      "value": "#1C1B1F"
+    },
+    {
+      "name": "theme_surface_variant",
+      "value": "#49454F"
+    },
+    {
+      "name": "theme_card_bg",
+      "value": "#2B2930"
+    },
+    {
+      "name": "theme_card_elevated",
+      "value": "#2B2930"
+    },
+    {
+      "name": "theme_sidebar_bg",
+      "value": "#2B2930"
+    },
+    {
+      "name": "theme_divider",
+      "value": "#49454F"
+    },
+    {
+      "name": "theme_scrim",
+      "value": "#99000000"
+    },
+    {
+      "name": "theme_ripple",
+      "value": "#33FFFFFF"
+    },
+    {
+      "name": "theme_on_surface",
+      "value": "#E6E1E5"
+    },
+    {
+      "name": "theme_on_surface_variant",
+      "value": "#CAC4D0"
+    },
+    {
+      "name": "theme_outline",
+      "value": "#938F99"
+    },
+    {
+      "name": "theme_text_muted",
+      "value": "#938F99"
+    },
+    {
+      "name": "theme_danger",
+      "value": "#F2B8B5"
+    },
+    {
+      "name": "theme_error",
+      "value": "#F2B8B5"
+    },
+    {
+      "name": "theme_success",
+      "value": "#81C995"
+    },
+    {
+      "name": "theme_find_phone",
+      "value": "#F2B8B5"
+    },
+    {
+      "name": "theme_find_phone_dark",
+      "value": "#C62828"
+    },
+    {
+      "name": "theme_icon_tint",
+      "value": "#CAC4D0"
+    },
+    {
+      "name": "theme_icon_on_surface",
+      "value": "#E6E1E5"
     }
   ]
 }

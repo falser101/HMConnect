@@ -647,6 +647,62 @@ export class AppNotifier {
   }
 
   /**
+   * Remote-input received from a desktop (desktop clicked our screen).
+   * Protocol-level receiver: no touch injection on HarmonyOS, so we surface the
+   * event as a throttled banner so the user knows the PC is controlling the phone.
+   * At most one banner every 5 s; tap opens the app.
+   */
+  private static readonly REMOTE_INPUT_NOTIFY_ID: number = 1950;
+  private lastRemoteInputNotifyAt: number = 0;
+
+  public async notifyRemoteInput(peerName: string, button: string): Promise<void> {
+    const now = Date.now();
+    if (now - this.lastRemoteInputNotifyAt < 5000) {
+      return;
+    }
+    this.lastRemoteInputNotifyAt = now;
+    let ok = await this.ensureEnabled();
+    if (!ok) {
+      return;
+    }
+    let name = peerName.length > 0 ? peerName : '电脑';
+    const label: string = button === 'right' ? '右键' :
+      (button === 'middle' ? '中键' : (button === 'double' ? '双击' : '左键'));
+    const id = AppNotifier.REMOTE_INPUT_NOTIFY_ID;
+    let agent = await this.buildOpenAppAgent(id, 'remote_input');
+    const request: notificationManager.NotificationRequest = {
+      id: id,
+      notificationSlotType: notificationManager.SlotType.SOCIAL_COMMUNICATION,
+      content: {
+        notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
+        normal: {
+          title: `${name} 正在控制这台设备`,
+          text: `远程输入 · ${label}点击`
+        }
+      },
+      tapDismissed: true
+    };
+    if (agent) {
+      request.wantAgent = agent;
+    }
+    try {
+      await notificationManager.publish(request);
+      console.info(`[Notify] remote-input published from ${name} ${label}`);
+    } catch (e) {
+      let err = e as BusinessError;
+      console.error(`[Notify] remote-input publish failed: code=${err.code} ${err.message}`);
+    }
+  }
+
+  public cancelRemoteInputNotification(): void {
+    try {
+      notificationManager.cancel(AppNotifier.REMOTE_INPUT_NOTIFY_ID);
+    } catch (_e) {
+      // ignore
+    }
+  }
+
+  /**
    * Persistent connection banner disabled (user request).
    * Kept as no-op so callers do not need to branch.
    */

@@ -10,6 +10,11 @@ import {
   ConnectionState,
   MprisPlayerState,
   SystemVolumeSink,
+  KdeMousepadRequestBody,
+  MousepadInputInfo,
+  MousepadModifiers,
+  KdeRunCommandEntry,
+  RunCommandOutputEvent,
   sanitizeDeviceName
 } from './KdeTypes';
 import { DeviceStore } from '../store/DeviceStore';
@@ -52,6 +57,14 @@ export class KdeClient {
   private mprisListListeners: Map<string, (names: string[]) => void> = new Map();
   /** deviceId → system volume listener. */
   private systemVolumeListeners: Map<string, (sinks: SystemVolumeSink[]) => void> = new Map();
+  /** deviceId → mousepad keyboard-state listener (RemoteInput page). */
+  private mousepadKeyboardListeners: Map<string, (enabled: boolean) => void> = new Map();
+  /** deviceId → inbound desktop-input listener (RemoteInput page feedback). */
+  private mousepadInputListeners: Map<string, (info: MousepadInputInfo) => void> = new Map();
+  /** deviceId → remote command list listener (RunCommand page). */
+  private runCommandListListeners: Map<string, (entries: KdeRunCommandEntry[]) => void> = new Map();
+  /** deviceId → remote command output listener (RunCommand page). */
+  private runCommandOutputListeners: Map<string, (event: RunCommandOutputEvent) => void> = new Map();
 
   public setContext(ctx: common.UIAbilityContext): void {
     this.context = ctx;
@@ -124,6 +137,18 @@ export class KdeClient {
 
   public getMyDeviceName(): string {
     return this.myDeviceName;
+  }
+
+  /** Apply a user-configured device name and propagate to live sessions. */
+  public setMyDeviceName(name: string): void {
+    if (!name || name.length === 0) {
+      return;
+    }
+    this.myDeviceName = sanitizeDeviceName(name);
+    this.sessions.forEach((s: DeviceSession) => {
+      s.configure(this.context, this.certPem, this.keyPem, this.myDeviceName, this.listenPort, 0, false);
+    });
+    console.info(`[KDE-MVP] Client device name set to: ${this.myDeviceName}`);
   }
 
   /** All peer sessions (for list building). */
@@ -202,6 +227,22 @@ export class KdeClient {
       if (volCb) {
         session.setSystemVolumeChangeListener(volCb);
       }
+      let kbCb = this.mousepadKeyboardListeners.get(knownDeviceId);
+      if (kbCb) {
+        session.setMousepadKeyboardStateListener(kbCb);
+      }
+      let inCb = this.mousepadInputListeners.get(knownDeviceId);
+      if (inCb) {
+        session.setMousepadInputListener(inCb);
+      }
+      let rcCb = this.runCommandListListeners.get(knownDeviceId);
+      if (rcCb) {
+        session.setRunCommandListListener(rcCb);
+      }
+      let rcoCb = this.runCommandOutputListeners.get(knownDeviceId);
+      if (rcoCb) {
+        session.setRunCommandOutputListener(rcoCb);
+      }
     }
   }
 
@@ -278,6 +319,22 @@ export class KdeClient {
     let volCb = this.systemVolumeListeners.get(realId);
     if (volCb) {
       session.setSystemVolumeChangeListener(volCb);
+    }
+    let kbCb = this.mousepadKeyboardListeners.get(realId);
+    if (kbCb) {
+      session.setMousepadKeyboardStateListener(kbCb);
+    }
+    let inCb = this.mousepadInputListeners.get(realId);
+    if (inCb) {
+      session.setMousepadInputListener(inCb);
+    }
+    let rcCb = this.runCommandListListeners.get(realId);
+    if (rcCb) {
+      session.setRunCommandListListener(rcCb);
+    }
+    let rcoCb = this.runCommandOutputListeners.get(realId);
+    if (rcoCb) {
+      session.setRunCommandOutputListener(rcoCb);
     }
     console.info(`[KDE-MVP] Session bound: ${realId} (total=${this.sessions.size})`);
   }
@@ -637,6 +694,119 @@ export class KdeClient {
 
   public setSystemVolumeDefaultForDevice(deviceId: string, name: string): void {
     this.sessions.get(deviceId)?.setSystemVolumeDefault(name);
+  }
+
+  // ── REMOTE INPUT (per-device) ────────────────────────────
+
+  /** Send a raw mousepad packet to a device (Android MousePadPlugin.sendPacket). */
+  public sendMousepadPacketTo(deviceId: string, body: KdeMousepadRequestBody): void {
+    this.sessions.get(deviceId)?.sendMousepadPacket(body);
+  }
+
+  public sendMousepadDeltaTo(deviceId: string, dx: number, dy: number): void {
+    this.sessions.get(deviceId)?.sendMousepadDelta(dx, dy);
+  }
+
+  public sendMousepadLeftClickTo(deviceId: string): void {
+    this.sessions.get(deviceId)?.sendMousepadLeftClick();
+  }
+
+  public sendMousepadRightClickTo(deviceId: string): void {
+    this.sessions.get(deviceId)?.sendMousepadRightClick();
+  }
+
+  public sendMousepadMiddleClickTo(deviceId: string): void {
+    this.sessions.get(deviceId)?.sendMousepadMiddleClick();
+  }
+
+  public sendMousepadDoubleClickTo(deviceId: string): void {
+    this.sessions.get(deviceId)?.sendMousepadDoubleClick();
+  }
+
+  public sendMousepadSingleHoldTo(deviceId: string): void {
+    this.sessions.get(deviceId)?.sendMousepadSingleHold();
+  }
+
+  public sendMousepadSingleReleaseTo(deviceId: string): void {
+    this.sessions.get(deviceId)?.sendMousepadSingleRelease();
+  }
+
+  public sendMousepadScrollTo(deviceId: string, dx: number, dy: number): void {
+    this.sessions.get(deviceId)?.sendMousepadScroll(dx, dy);
+  }
+
+  public sendMousepadKeyTo(deviceId: string, text: string): void {
+    this.sessions.get(deviceId)?.sendMousepadKey(text);
+  }
+
+  public sendMousepadSpecialKeyTo(
+    deviceId: string,
+    specialKey: number,
+    modifiers: MousepadModifiers
+  ): void {
+    this.sessions.get(deviceId)?.sendMousepadSpecialKey(specialKey, modifiers);
+  }
+
+  public getMousepadKeyboardEnabledForDevice(deviceId: string): boolean {
+    return this.sessions.get(deviceId)?.getMousepadKeyboardEnabled() ?? true;
+  }
+
+  public setMousepadKeyboardStateListenerForDevice(
+    deviceId: string,
+    cb: (enabled: boolean) => void
+  ): void {
+    this.mousepadKeyboardListeners.set(deviceId, cb);
+    this.sessions.get(deviceId)?.setMousepadKeyboardStateListener(cb);
+  }
+
+  public setMousepadInputListenerForDevice(
+    deviceId: string,
+    cb: (info: MousepadInputInfo) => void
+  ): void {
+    this.mousepadInputListeners.set(deviceId, cb);
+    this.sessions.get(deviceId)?.setMousepadInputListener(cb);
+  }
+
+  // ── REMOTE COMMAND (per-device, Android RunCommandPlugin) ──
+
+  public setRunCommandListListenerForDevice(
+    deviceId: string,
+    cb: (entries: KdeRunCommandEntry[]) => void
+  ): void {
+    this.runCommandListListeners.set(deviceId, cb);
+    this.sessions.get(deviceId)?.setRunCommandListListener(cb);
+  }
+
+  public setRunCommandOutputListenerForDevice(
+    deviceId: string,
+    cb: (event: RunCommandOutputEvent) => void
+  ): void {
+    this.runCommandOutputListeners.set(deviceId, cb);
+    this.sessions.get(deviceId)?.setRunCommandOutputListener(cb);
+  }
+
+  public getRunCommandEntriesForDevice(deviceId: string): KdeRunCommandEntry[] {
+    return this.sessions.get(deviceId)?.getRunCommandEntries() ?? [];
+  }
+
+  public getRunCommandCanAddForDevice(deviceId: string): boolean {
+    return this.sessions.get(deviceId)?.getCanAddRemoteCommand() ?? false;
+  }
+
+  public requestRunCommandListForDevice(deviceId: string): void {
+    this.sessions.get(deviceId)?.requestRunCommandList();
+  }
+
+  public runCommandOnDevice(deviceId: string, key: string): void {
+    this.sessions.get(deviceId)?.runCommandOnPeer(key);
+  }
+
+  public setupRunCommandOnDevice(deviceId: string): void {
+    this.sessions.get(deviceId)?.setupRunCommandOnPeer();
+  }
+
+  public stopRunCommandOnDevice(deviceId: string): void {
+    this.sessions.get(deviceId)?.stopRunCommandOnPeer();
   }
 
   public async setupMprisReceiver(ctx: common.UIAbilityContext): Promise<void> {

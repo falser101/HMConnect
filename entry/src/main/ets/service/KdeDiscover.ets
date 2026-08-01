@@ -62,6 +62,14 @@ export class KdeDiscover {
     return this.myDeviceName;
   }
 
+  /** Apply a user-configured device name (Settings → device name). */
+  public setMyDeviceName(name: string): void {
+    if (name && name.length > 0) {
+      this.myDeviceName = sanitizeDeviceName(name);
+      console.info(`[KDE-MVP] Device name set to: ${this.myDeviceName}`);
+    }
+  }
+
   public startListen(onDeviceFound: (devices: KdeDevice[]) => void): void {
     this.onDeviceFoundCallback = onDeviceFound;
     if (this.running) {
