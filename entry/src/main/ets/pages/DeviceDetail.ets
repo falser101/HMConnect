@@ -72,6 +72,8 @@ struct DeviceDetail {
   @State fileSending: boolean = false;
   @State fileProgress: number = 0;
   @State fileProgressLabel: string = '';
+  /** Current send job so the inline card can cancel it (Android notification cancel). */
+  private activeSendJob: FileSendJob | null = null;
   /** Bumps when plugin enable state changes so the grid refreshes. */
   @State pluginRev: number = 0;
   @State visiblePluginBtns: PluginButton[] = [];
@@ -415,9 +417,11 @@ struct DeviceDetail {
       return;
     }
     try {
-      // ── Open DocumentViewPicker ──
+      // ── Open DocumentViewPicker (multi-select, Android SendFileActivity ALLOW_MULTIPLE) ──
+      const selectOpts: picker.DocumentSelectOptions = new picker.DocumentSelectOptions();
+      selectOpts.maxSelectNumber = 500;
       const documentPicker: picker.DocumentViewPicker = new picker.DocumentViewPicker();
-      const uris: string[] = await documentPicker.select();
+      const uris: string[] = await documentPicker.select(selectOpts);
       if (!uris || uris.length === 0) {
         return;
       }
@@ -453,6 +457,7 @@ struct DeviceDetail {
       for (const info of fileInfos) {
         job.addFile(info);
       }
+      this.activeSendJob = job;
 
       // ── Start sending with progress ──
       this.fileSending = true;
@@ -468,13 +473,26 @@ struct DeviceDetail {
         }
       });
 
-      // ── Done ──
-      this.showToast($r('app.string.file_send_done'));
+      // ── Done (cancel is a graceful stop, not an error) ──
+      if (job.isCancelled) {
+        this.showToast('已取消发送');
+      } else {
+        this.showToast($r('app.string.file_send_done'));
+      }
     } catch (e) {
       console.error('[DeviceDetail] onSendFiles error:', JSON.stringify(e));
       this.showToast($r('app.string.file_send_failed'));
     } finally {
+      this.activeSendJob = null;
       this.fileSending = false;
+    }
+  }
+
+  /** Cancel the in-flight send (Android ShareBroadcastReceiver ACTION_CANCEL_SHARE). */
+  private cancelSendFile(): void {
+    if (this.activeSendJob) {
+      this.activeSendJob.cancel();
+      this.showToast('正在取消…');
     }
   }
 
@@ -871,7 +889,27 @@ struct DeviceDetail {
         .height(4)
         .color(UiTheme.primary)
         .backgroundColor(UiTheme.surfaceVariant)
-        .margin({ bottom: 12 })
+        .margin({ bottom: 10 })
+
+      Row() {
+        Text(`${this.fileProgress}%`)
+          .fontSize(12)
+          .fontColor(UiTheme.textMuted)
+          .layoutWeight(1)
+        Button('取消')
+          .height(28)
+          .fontSize(13)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(UiTheme.danger)
+          .backgroundColor(UiTheme.surfaceVariant)
+          .borderRadius(14)
+          .padding({ left: 14, right: 14 })
+          .onClick(() => {
+            this.cancelSendFile();
+          })
+      }
+      .width('100%')
+      .margin({ bottom: 10 })
     }
     .width('100%')
     .padding({ left: 16, right: 16, top: 10, bottom: 10 })

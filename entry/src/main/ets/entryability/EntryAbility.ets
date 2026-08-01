@@ -1,7 +1,8 @@
-import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
+import { AbilityConstant, ConfigurationConstant, UIAbility, Want, wantConstant } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
-import { fileUri } from '@kit.CoreFileKit';
+import { fileUri, fileIo } from '@kit.CoreFileKit';
+import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import { AppSession } from '../app/AppSession';
 import { FindMyPhoneHelper } from '../common/FindMyPhoneHelper';
 import { AppNotifier } from '../common/AppNotifier';
@@ -44,27 +45,10 @@ export default class EntryAbility extends UIAbility {
       want.parameters !== undefined ? want.parameters['openFile'] as string : undefined;
     if (openFile) {
       hilog.info(DOMAIN, 'testTag', 'Open file from notification: %{public}s', openFile);
-      try {
-        const uri: string = openFile.startsWith('file://') ? openFile : fileUri.getUriFromPath(openFile);
-        const ext: string = openFile.substring(openFile.lastIndexOf('.') + 1).toLowerCase();
-        const mimeMap: Record<string, string> = {
-          'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png',
-          'gif': 'image/gif', 'bmp': 'image/bmp', 'webp': 'image/webp',
-          'mp4': 'video/mp4', 'mkv': 'video/x-matroska',
-          'mp3': 'audio/mpeg', 'pdf': 'application/pdf',
-          'txt': 'text/plain'
-        };
-        const mime: string = mimeMap[ext] ?? 'application/octet-stream';
-        this.context.startAbility({
-          action: 'ohos.want.action.viewData',
-          uri: uri,
-          type: mime
-        }).catch((e: Error) => {
-          hilog.error(DOMAIN, 'testTag', 'startAbility for file failed: %{public}s', e.message);
-        });
-      } catch (e) {
-        hilog.error(DOMAIN, 'testTag', 'Open file failed: %{public}s', JSON.stringify(e));
-      }
+      this.openReceivedFile(openFile).catch((e: Error) => {
+        hilog.error(DOMAIN, 'testTag', 'openReceivedFile failed: %{public}s', e.message);
+        this.openWithViewData(openFile);
+      });
       return;
     }
 
@@ -73,14 +57,20 @@ export default class EntryAbility extends UIAbility {
       want.parameters !== undefined ? want.parameters['shareFile'] as string : undefined;
     if (shareFile) {
       hilog.info(DOMAIN, 'testTag', 'Share file from notification: %{public}s', shareFile);
+      const mime: string = (want.parameters !== undefined ? want.parameters['shareMime'] as string : undefined) ??
+        'application/octet-stream';
+      const sandboxPath: string = this.copyToSandbox(shareFile);
+      if (sandboxPath.length === 0) {
+        hilog.error(DOMAIN, 'testTag', '%{public}s', 'share file: no sandbox copy available');
+        return;
+      }
       try {
-        const uri: string = shareFile.startsWith('file://') ? shareFile : fileUri.getUriFromPath(shareFile);
-        const mime: string = (want.parameters !== undefined ? want.parameters['shareMime'] as string : undefined) ??
-          'application/octet-stream';
+        const uri: string = fileUri.getUriFromPath(sandboxPath);
         this.context.startAbility({
           action: 'ohos.want.action.sendData',
           uri: uri,
-          type: mime
+          type: mime,
+          flags: wantConstant.Flags.FLAG_AUTH_READ_URI_PERMISSION
         }).catch((e: Error) => {
           hilog.error(DOMAIN, 'testTag', 'shareAbility for file failed: %{public}s', e.message);
         });
@@ -105,6 +95,21 @@ export default class EntryAbility extends UIAbility {
     if (sendFile) {
       hilog.info(DOMAIN, 'testTag', 'Send file to device: %{public}s', sendFile);
       AppSession.getInstance().openFileSendFor(sendFile);
+      return;
+    }
+
+    // Cancel file transfer from the transfer notification action button
+    const cancelTransfer: string | undefined =
+      want.parameters !== undefined ? want.parameters['cancelTransfer'] as string : undefined;
+    if (cancelTransfer) {
+      hilog.info(DOMAIN, 'testTag', 'Cancel file transfer job: %{public}s', cancelTransfer);
+      const role: string = want.parameters !== undefined
+        ? String(want.parameters['cancelTransferRole'] ?? 'send')
+        : 'send';
+      const deviceId: string = want.parameters !== undefined
+        ? String(want.parameters['cancelTransferDevice'] ?? '')
+        : '';
+      AppSession.getInstance().cancelFileTransfer(deviceId, cancelTransfer, role);
       return;
     }
 
@@ -141,6 +146,154 @@ export default class EntryAbility extends UIAbility {
       // Open control page if already ringing; do NOT stop
       if (FindMyPhoneHelper.getInstance().isActive()) {
         AppSession.getInstance().openFindPhonePage();
+      }
+    }
+  }
+
+  /** Map a file extension to a MIME type. */
+  private static fileMime(ext: string): string {
+    const mimeMap: Record<string, string> = {
+      'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png',
+      'gif': 'image/gif', 'bmp': 'image/bmp', 'webp': 'image/webp',
+      'heic': 'image/heic', 'heif': 'image/heif',
+      'mp4': 'video/mp4', 'avi': 'video/x-msvideo', 'mov': 'video/quicktime',
+      'mkv': 'video/x-matroska', 'webm': 'video/webm',
+      'mp3': 'audio/mpeg', 'wav': 'audio/wav', 'aac': 'audio/aac',
+      'flac': 'audio/flac', 'ogg': 'audio/ogg',
+      'pdf': 'application/pdf', 'doc': 'application/msword',
+      'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'xls': 'application/vnd.ms-excel',
+      'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'ppt': 'application/vnd.ms-powerpoint',
+      'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'txt': 'text/plain', 'csv': 'text/csv', 'md': 'text/markdown',
+      'json': 'application/json', 'xml': 'application/xml',
+      'zip': 'application/zip', 'rar': 'application/x-rar-compressed',
+      '7z': 'application/x-7z-compressed', 'apk': 'application/vnd.android.package-archive'
+    };
+    return mimeMap[ext] ?? 'application/octet-stream';
+  }
+
+  /**
+   * Open a received file by type (HarmonyOS official guidance):
+   *  - image/* → save to 图库 via the system dialog, open with the media uri
+   *  - video/* → same, PhotoType.VIDEO
+   *  - everything else (audio / pdf / documents) → viewData with a sandbox uri
+   *    and FLAG_AUTH_READ_URI_PERMISSION so the target app can read the file.
+   */
+  private async openReceivedFile(filePath: string): Promise<void> {
+    const ext: string = filePath.substring(filePath.lastIndexOf('.') + 1).toLowerCase();
+    const mime: string = EntryAbility.fileMime(ext);
+    if (mime.startsWith('image/')) {
+      await this.openMediaInGallery(filePath, mime, photoAccessHelper.PhotoType.IMAGE);
+      return;
+    }
+    if (mime.startsWith('video/')) {
+      await this.openMediaInGallery(filePath, mime, photoAccessHelper.PhotoType.VIDEO);
+      return;
+    }
+    this.openWithViewData(filePath);
+  }
+
+  /**
+   * Copy a received file into the app sandbox so other apps can reach it via a
+   * valid `file://<bundleName>/...` uri. Returns the sandbox path or '' on error.
+   */
+  private copyToSandbox(filePath: string): string {
+    try {
+      const fullName: string = filePath.substring(filePath.lastIndexOf('/') + 1);
+      const sandboxPath: string = `${this.context.cacheDir}/kde_open_${Date.now()}_${fullName}`;
+      fileIo.copyFileSync(filePath, sandboxPath);
+      return sandboxPath;
+    } catch (e) {
+      hilog.error(DOMAIN, 'testTag', 'sandbox copy failed: %{public}s', JSON.stringify(e));
+      return '';
+    }
+  }
+
+  /**
+   * Open a file with another app via viewData.
+   *
+   * The uri must be a sandbox uri (file://<bundleName>/...) and the want must
+   * carry FLAG_AUTH_READ_URI_PERMISSION to grant the target app read access —
+   * otherwise the system file preview reports the file as "moved or renamed".
+   */
+  private openWithViewData(filePath: string): void {
+    const ext: string = filePath.substring(filePath.lastIndexOf('.') + 1).toLowerCase();
+    const mime: string = EntryAbility.fileMime(ext);
+    const sandboxPath: string = this.copyToSandbox(filePath);
+    if (sandboxPath.length === 0) {
+      hilog.error(DOMAIN, 'testTag', '%{public}s', 'openWithViewData: no sandbox copy available');
+      return;
+    }
+    const sandboxUri: string = fileUri.getUriFromPath(sandboxPath);
+    hilog.info(DOMAIN, 'testTag', 'open viewData uri=%{public}s type=%{public}s', sandboxUri, mime);
+    this.context.startAbility({
+      action: 'ohos.want.action.viewData',
+      uri: sandboxUri,
+      type: mime,
+      flags: wantConstant.Flags.FLAG_AUTH_READ_URI_PERMISSION
+    }).catch((e: Error) => {
+      hilog.error(DOMAIN, 'testTag', 'startAbility viewData failed: %{public}s', e.message);
+    });
+  }
+
+  /**
+   * Save an image / video into the gallery (图库) via the permission-free system
+   * save dialog (photoAccessHelper.showAssetsCreationDialog), then open it there.
+   * The dialog requires the source to live in the app sandbox, so we copy it first.
+   */
+  private async openMediaInGallery(
+    filePath: string,
+    mime: string,
+    photoType: photoAccessHelper.PhotoType
+  ): Promise<void> {
+    const sandboxPath: string = this.copyToSandbox(filePath);
+    if (sandboxPath.length === 0) {
+      this.openWithViewData(filePath);
+      return;
+    }
+
+    try {
+      const srcUri: string = fileUri.getUriFromPath(sandboxPath);
+      const helper: photoAccessHelper.PhotoAccessHelper = photoAccessHelper.getPhotoAccessHelper(this.context);
+      const fullName: string = filePath.substring(filePath.lastIndexOf('/') + 1);
+      const ext: string = filePath.substring(filePath.lastIndexOf('.') + 1).toLowerCase();
+      const mediaExt: string = ext === 'jpeg' ? 'jpg' : (ext.length > 0 ? ext : 'jpg');
+      const dot: number = fullName.lastIndexOf('.');
+      const title: string = dot > 0 ? fullName.substring(0, dot) : fullName;
+      const config: photoAccessHelper.PhotoCreationConfig = {
+        title: title.length > 0 ? title : 'HMConnect',
+        fileNameExtension: mediaExt,
+        photoType: photoType
+      };
+      const desUris: string[] = await helper.showAssetsCreationDialog([srcUri], [config]);
+
+      if (desUris && desUris.length > 0) {
+        // Write the file content into the newly created media asset.
+        const srcFile: fileIo.File = await fileIo.open(sandboxPath, fileIo.OpenMode.READ_ONLY);
+        const desFile: fileIo.File = await fileIo.open(desUris[0], fileIo.OpenMode.WRITE_ONLY);
+        try {
+          await fileIo.copyFile(srcFile.fd, desFile.fd);
+        } finally {
+          try { fileIo.closeSync(srcFile); } catch (_sc) {}
+          try { fileIo.closeSync(desFile); } catch (_dc) {}
+        }
+        hilog.info(DOMAIN, 'testTag', 'Media saved to gallery: %{public}s', desUris[0]);
+        // Open the file via the officially-supported file-open path (sandbox uri +
+        // read-permission flag). Opening the media uri directly can route to the
+        // file-preview service which cannot render it ("预览失败").
+        this.openWithViewData(filePath);
+      } else {
+        hilog.warn(DOMAIN, 'testTag', '%{public}s', 'User declined gallery save — fallback to viewData');
+        this.openWithViewData(filePath);
+      }
+    } catch (e) {
+      hilog.error(DOMAIN, 'testTag', 'openMediaInGallery failed: %{public}s', JSON.stringify(e));
+      this.openWithViewData(filePath);
+    } finally {
+      try { fileIo.unlinkSync(sandboxPath); } catch (_unlinkErr) {
+        // best effort cleanup
       }
     }
   }

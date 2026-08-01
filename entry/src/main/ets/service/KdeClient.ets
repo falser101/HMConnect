@@ -799,6 +799,16 @@ export class KdeClient {
     return s.sendPacketWithPayload(body, filePath, onProgress);
   }
 
+  /** Cancel an inbound file transfer (notification cancel action). */
+  public cancelIncomingTransfer(deviceId: string, jobId: string): void {
+    const s: DeviceSession | null = this.sessions.get(deviceId) ?? null;
+    if (!s) {
+      console.warn('[KDE-MVP] cancelIncomingTransfer: no session for device');
+      return;
+    }
+    s.cancelIncomingTransfer(jobId);
+  }
+
   public stop(): void {
     this.sessions.forEach((s: DeviceSession) => {
       s.stop();

@@ -174,6 +174,18 @@ export class AppSession {
     }
   }
 
+  /**
+   * Cancel a file transfer from a notification action button.
+   * @param role 'receive' → cancel inbound on the peer session; else outbound job.
+   */
+  public cancelFileTransfer(deviceId: string, jobId: string, role: string): void {
+    if (!jobId || jobId.length === 0) {
+      return;
+    }
+    console.info(`[AppSession] cancel file transfer job=${jobId} role=${role}`);
+    this.service.cancelFileTransfer(deviceId, jobId, role);
+  }
+
   public subscribeDevices(cb: (items: DeviceListItem[]) => void): number {
     let id = this.nextListenerId++;
     this.deviceListeners.set(id, cb);

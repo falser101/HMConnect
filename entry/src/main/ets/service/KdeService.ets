@@ -28,6 +28,9 @@ export class KdeService {
   private devicesCallback?: (items: DeviceListItem[]) => void;
   private statusCallback?: (status: KdeStatus) => void;
   private lastStatus: KdeStatus = { state: 'idle', message: '' };
+  /** Active outbound file-send jobs (notification cancel action routes here). */
+  private activeSendJobs: Map<string, FileSendJob> = new Map();
+  private sendJobSeq: number = 0;
 
   public async start(
     context: common.UIAbilityContext,
@@ -382,7 +385,7 @@ export class KdeService {
     if (!s) {
       throw new Error('Not connected');
     }
-    return new FileSendJob(s);
+    return this.registerSendJob(new FileSendJob(s));
   }
 
   public createFileSendJobFor(deviceId: string): FileSendJob {
@@ -390,7 +393,52 @@ export class KdeService {
     if (!s) {
       throw new Error('Not connected');
     }
-    return new FileSendJob(s);
+    return this.registerSendJob(new FileSendJob(s));
+  }
+
+  /** Assign a jobId, register in the cancel-routing map, auto-unregister on finish. */
+  private registerSendJob(job: FileSendJob): FileSendJob {
+    const id: string = `snd_${Date.now()}_${this.sendJobSeq++}`;
+    job.setJobId(id);
+    job.setOnDone(() => {
+      this.activeSendJobs.delete(job.getJobId());
+    });
+    this.activeSendJobs.set(id, job);
+    return job;
+  }
+
+  /** Cancel an outbound file-send job (notification cancel action / UI). */
+  public cancelFileSendJob(jobId: string): void {
+    const job: FileSendJob | undefined = this.activeSendJobs.get(jobId);
+    if (job) {
+      job.cancel();
+    } else {
+      console.warn('[KdeService] cancelFileSendJob: unknown job', jobId);
+    }
+  }
+
+  /** Cancel an inbound file transfer on a peer session (notification cancel action). */
+  public cancelIncomingTransfer(deviceId: string, jobId: string): void {
+    this.client.cancelIncomingTransfer(deviceId, jobId);
+  }
+
+  /**
+   * Generic cancel entry point from the transfer notification action.
+   * @param role 'receive' → cancel inbound on the peer session; else outbound job.
+   */
+  public cancelFileTransfer(deviceId: string, jobId: string, role: string): void {
+    if (role === 'receive') {
+      if (deviceId && deviceId.length > 0) {
+        this.cancelIncomingTransfer(deviceId, jobId);
+      } else {
+        const sessions: DeviceSession[] = this.client.getSessions();
+        for (let i = 0; i < sessions.length; i++) {
+          sessions[i].cancelIncomingTransfer(jobId);
+        }
+      }
+    } else {
+      this.cancelFileSendJob(jobId);
+    }
   }
 
   public sendFileWithPayload(

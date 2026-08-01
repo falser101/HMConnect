@@ -27,6 +27,7 @@ import {
   PAYLOAD_TRANSFER_MIN_PORT,
   PAYLOAD_TRANSFER_MAX_PORT,
   PACKET_TYPE_SHARE_REQUEST,
+  PACKET_TYPE_SHARE_REQUEST_UPDATE,
   PACKET_TYPE_MPRIS,
   PACKET_TYPE_MPRIS_REQUEST,
   PACKET_TYPE_SYSTEMVOLUME,
@@ -35,6 +36,9 @@ import {
   PACKET_TYPE_NOTIFICATION_REQUEST,
   KdeNotificationBody,
   KdeNotificationRequestBody,
+  FileTransferNotifyInfo,
+  FileTransferResultInfo,
+  TransferCancelToken,
   MprisPlayerState,
   MPRIS_DEFAULT_SEEK_US,
   SystemVolumeSink,
@@ -66,6 +70,30 @@ import {
   SystemMediaExporter,
   SystemMediaMonitor
 } from './SystemMediaMonitor';
+
+/**
+ * Mutable state of an inbound file batch (Android CompositeReceiveFileJob).
+ * One job lives while the peer streams `numberOfFiles` files; progress and the
+ * ongoing notification are shared across the batch.
+ */
+interface IncomingJobState {
+  jobId: string;
+  totalFiles: number;
+  totalPayloadSize: number;
+  /** 1-based number of the file being received / just completed. */
+  currentFileIndex: number;
+  currentFileName: string;
+  totalReceived: number;
+  prevProgress: number;
+  lastProgressTime: number;
+  cancelled: boolean;
+  done: boolean;
+  lastFilePath: string;
+  lastFileName: string;
+  idleTimer: number;
+  /** Rejects the pending payload-read promise so cancel is immediate. */
+  cancelRead: (() => void) | null;
+}
 
 /**
  * Per-device connection session (one peer).
@@ -165,6 +193,12 @@ export class DeviceSession implements SystemMediaExporter {
   private batteryTimer: number = -1;
   private lastSentCharge: number = -1;
   private lastSentCharging: boolean = false;
+
+  // ── Inbound file transfers (Android CompositeReceiveFileJob) ──
+  /** Active inbound batch job (one per session); null when idle. */
+  private incomingJob: IncomingJobState | null = null;
+  /** Serializes file receives so batch accounting stays sequential (Android: single thread). */
+  private receiveChain: Promise<void> = Promise.resolve();
 
   /** SPKI public keys for pairing verification (Android PairingHandler). */
   private localPubKey: Uint8Array | null = null;
@@ -666,7 +700,7 @@ export class DeviceSession implements SystemMediaExporter {
     FindMyPhoneHelper.getInstance().stop();
   }
 
-  /** Make the remote device ring (Android FindMyPhonePlugin). */
+  /** Make the remote device ring (Android FindMyPhonePlugin / FindRemoteDevice). */
   public sendFindMyPhone(): void {
     if (!this.isPluginEnabled(PLUGIN_FIND_MY_PHONE)) {
       console.info('[KDE-MVP] sendFindMyPhone: plugin disabled for peer');
@@ -676,10 +710,14 @@ export class DeviceSession implements SystemMediaExporter {
       console.warn('[KDE-MVP] sendFindMyPhone: TLS not live');
       return;
     }
+    // Empty body — matches Android FindRemoteDevicePlugin: NetworkPacket(PACKET_TYPE_FINDMYPHONE_REQUEST)
     const json: string = serializePacket('kdeconnect.findmyphone.request', {} as KdeFindMyPhoneBody);
+    console.info('[KDE-MVP] sendFindMyPhone → peer');
     this.sendTls(json, (err) => {
       if (err) {
         console.error('[KDE-MVP] findmyphone send failed:', JSON.stringify(err));
+      } else {
+        console.info('[KDE-MVP] findmyphone request sent OK');
       }
     });
   }
@@ -2871,6 +2909,11 @@ export class DeviceSession implements SystemMediaExporter {
       return;
     }
 
+    if (type === PACKET_TYPE_SHARE_REQUEST_UPDATE) {
+      this.handleShareRequestUpdate(body as KdeShareRequestBody);
+      return;
+    }
+
     if (type === PACKET_TYPE_SHARE_REQUEST) {
       this.handleIncomingShareRequest(packet);
       return;
@@ -2946,16 +2989,239 @@ export class DeviceSession implements SystemMediaExporter {
   }
 
   /**
+   * Android SharePlugin.onPacketReceived: filename → receive file; text → clipboard;
+   * url → open browser. File receives are serialized on a per-session chain so batch
+   * accounting stays correct (Android CompositeReceiveFileJob runs a single thread).
+   */
+  private handleIncomingShareRequest(packet: KdePacket<object>): void {
+    const body: KdeShareRequestBody = packet.body as KdeShareRequestBody;
+    if (!body) {
+      return;
+    }
+    const filename: string = typeof body.filename === 'string' ? body.filename : '';
+    if (filename.length > 0) {
+      this.receiveChain = this.receiveChain.then(() => {
+        return this.doReceiveFile(packet);
+      }).catch((e: Error) => {
+        console.error('[KDE-MVP] receive chain error:', e.message);
+      });
+      return;
+    }
+    const text: string = typeof body.text === 'string' ? body.text : '';
+    if (text.length > 0) {
+      this.receiveText(text);
+      return;
+    }
+    const url: string = typeof body.url === 'string' ? body.url : '';
+    if (url.length > 0) {
+      this.receiveUrl(url);
+      return;
+    }
+    console.warn('[KDE-MVP] share.request with nothing attached');
+  }
+
+  /** Android SharePlugin.receiveText — save to clipboard + confirm banner. */
+  private receiveText(text: string): void {
+    const peerName: string = this.peerDevice?.deviceName ?? '设备';
+    console.info(`[KDE-MVP] Receiving text from ${peerName} (${text.length} chars)`);
+    this.writeLocalClipboard(text);
+    AppNotifier.getInstance().notifyTextReceived(text, peerName).catch((e: Error) => {
+      console.error('[KDE-MVP] text-received notify failed:', e.message);
+    });
+    this.emit(this.paired ? 'paired' : 'connected', `收到文本: ${text.substring(0, 40)}`);
+  }
+
+  /** Android SharePlugin.receiveUrl — open in the system browser. */
+  private receiveUrl(url: string): void {
+    const peerName: string = this.peerDevice?.deviceName ?? '设备';
+    console.info(`[KDE-MVP] Receiving URL from ${peerName}: ${url}`);
+    if (this.context) {
+      this.context.startAbility({
+        action: 'ohos.want.action.viewData',
+        uri: url
+      }).catch((e: Error) => {
+        console.error('[KDE-MVP] open url failed:', e.message);
+        this.emit('error', `无法打开链接: ${url}`);
+      });
+    }
+    this.emit(this.paired ? 'paired' : 'connected', `收到链接: ${url}`);
+  }
+
+  /**
+   * Android SharePlugin.onPacketReceived for PACKET_TYPE_SHARE_REQUEST_UPDATE —
+   * refresh batch totals (numberOfFiles + totalPayloadSize) on the active job.
+   */
+  private handleShareRequestUpdate(body: KdeShareRequestBody): void {
+    if (!body) {
+      return;
+    }
+    const job: IncomingJobState | null = this.incomingJob;
+    if (job === null || job.done) {
+      console.info('[KDE-MVP] share.request.update ignored (no active receive job)');
+      return;
+    }
+    if (typeof body.numberOfFiles === 'number' && body.numberOfFiles > 0) {
+      job.totalFiles = body.numberOfFiles;
+    }
+    if (typeof body.totalPayloadSize === 'number' && body.totalPayloadSize > 0) {
+      job.totalPayloadSize = body.totalPayloadSize;
+    }
+    this.notifyIncomingProgress(job, job.prevProgress, true);
+  }
+
+  private newIncomingJob(): IncomingJobState {
+    const job: IncomingJobState = {
+      jobId: `rcv_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
+      totalFiles: 1,
+      totalPayloadSize: 0,
+      currentFileIndex: 0,
+      currentFileName: '',
+      totalReceived: 0,
+      prevProgress: 0,
+      lastProgressTime: 0,
+      cancelled: false,
+      done: false,
+      lastFilePath: '',
+      lastFileName: '',
+      idleTimer: -1,
+      cancelRead: null
+    };
+    return job;
+  }
+
+  /** Progress banner (Android ReceiveNotification.setProgress). */
+  private notifyIncomingProgress(job: IncomingJobState, percent: number, force: boolean): void {
+    void force;
+    const peerName: string = this.peerDevice?.deviceName ?? '设备';
+    const info: FileTransferNotifyInfo = {
+      role: 'receive',
+      jobId: job.jobId,
+      deviceName: peerName,
+      deviceId: this.getBoundDeviceId(),
+      fileName: job.currentFileName.length > 0 ? job.currentFileName : '文件',
+      fileIndex: Math.max(1, job.currentFileIndex),
+      totalFiles: job.totalFiles,
+      percent: percent
+    };
+    AppNotifier.getInstance().notifyTransferProgress(info).catch((e: Error) => {
+      console.error('[KDE-MVP] receive progress notify failed:', e.message);
+    });
+  }
+
+  /** Finish banner (Android ReceiveNotification.setFinished + setURI). */
+  private completeIncomingJob(job: IncomingJobState): void {
+    if (job.done) {
+      return;
+    }
+    job.done = true;
+    if (job.idleTimer >= 0) {
+      clearTimeout(job.idleTimer);
+      job.idleTimer = -1;
+    }
+    const peerName: string = this.peerDevice?.deviceName ?? '设备';
+    const result: FileTransferResultInfo = {
+      role: 'receive',
+      jobId: job.jobId,
+      deviceName: peerName,
+      deviceId: this.getBoundDeviceId(),
+      numFiles: Math.max(1, job.currentFileIndex),
+      totalFiles: job.totalFiles,
+      fileName: job.lastFileName.length > 0 ? job.lastFileName : undefined,
+      filePath: job.lastFilePath.length > 0 ? job.lastFilePath : undefined
+    };
+    AppNotifier.getInstance().notifyTransferFinished(result).catch((e: Error) => {
+      console.error('[KDE-MVP] receive finished notify failed:', e.message);
+    });
+    this.emit(this.paired ? 'paired' : 'connected',
+      `收到文件: ${job.lastFileName.length > 0 ? job.lastFileName : job.currentFileName}`);
+    if (this.incomingJob === job) {
+      this.incomingJob = null;
+    }
+  }
+
+  /** Failure banner (Android ReceiveNotification.setFailed). */
+  private failIncomingJob(job: IncomingJobState, _errMsg: string): void {
+    if (job.done) {
+      return;
+    }
+    job.done = true;
+    if (job.idleTimer >= 0) {
+      clearTimeout(job.idleTimer);
+      job.idleTimer = -1;
+    }
+    const peerName: string = this.peerDevice?.deviceName ?? '设备';
+    const result: FileTransferResultInfo = {
+      role: 'receive',
+      jobId: job.jobId,
+      deviceName: peerName,
+      deviceId: this.getBoundDeviceId(),
+      numFiles: Math.max(0, job.currentFileIndex - 1),
+      totalFiles: job.totalFiles
+    };
+    AppNotifier.getInstance().notifyTransferFailed(result).catch((e: Error) => {
+      console.error('[KDE-MVP] receive failed notify error:', e.message);
+    });
+    this.emit('error', `接收文件失败: ${job.currentFileName}`);
+    if (this.incomingJob === job) {
+      this.incomingJob = null;
+    }
+  }
+
+  /**
+   * Batch hygiene: after a file completes but more are expected, wait briefly for
+   * the next packet. If the sender goes silent, finalize with what we received.
+   */
+  private scheduleIdleFinalize(job: IncomingJobState): void {
+    if (job.done) {
+      return;
+    }
+    if (job.idleTimer >= 0) {
+      clearTimeout(job.idleTimer);
+    }
+    job.idleTimer = setTimeout(() => {
+      job.idleTimer = -1;
+      this.completeIncomingJob(job);
+    }, 10000) as number;
+  }
+
+  /**
+   * Cancel the active receive job (Android ShareBroadcastReceiver ACTION_CANCEL_SHARE).
+   */
+  public cancelIncomingTransfer(jobId: string): void {
+    const job: IncomingJobState | null = this.incomingJob;
+    if (job === null || job.jobId !== jobId) {
+      return;
+    }
+    job.cancelled = true;
+    if (job.idleTimer >= 0) {
+      clearTimeout(job.idleTimer);
+      job.idleTimer = -1;
+    }
+    if (job.cancelRead) {
+      const cb: () => void = job.cancelRead;
+      job.cancelRead = null;
+      cb();
+    }
+    AppNotifier.getInstance().cancelTransferNotification(jobId);
+    console.info(`[KDE-MVP] Incoming transfer cancelled: ${jobId}`);
+    this.emit('connected', '已取消接收文件');
+  }
+
+  /**
    * Receive a file from the peer — matches Android LanLink.receivedNetworkPacket +
    * SharePlugin.receiveFile / CompositeReceiveFileJob.
    *
    * Flow: connect TLS client to peer's payload port → read bytes → save to local file.
    */
-  private async handleIncomingShareRequest(packet: KdePacket<object>): Promise<void> {
+  private async doReceiveFile(packet: KdePacket<object>): Promise<void> {
     const body: KdeShareRequestBody = packet.body as KdeShareRequestBody;
-    const filename: string = body.filename ?? `received_${Date.now()}`;
-    const totalPayloadSize: number = body.totalPayloadSize;
-    const payloadSize: number = packet.payloadSize ?? totalPayloadSize;
+    const filename: string = typeof body.filename === 'string' && body.filename.length > 0
+      ? body.filename
+      : `received_${Date.now()}`;
+    const payloadSize: number = packet.payloadSize ??
+      (typeof body.totalPayloadSize === 'number' ? body.totalPayloadSize : 0);
+    const hasNumberOfFiles: boolean = typeof body.numberOfFiles === 'number' && body.numberOfFiles > 0;
+    const isOpen: boolean = body.open === true;
 
     if (!packet.payloadTransferInfo || !packet.payloadTransferInfo.port) {
       console.error('[KDE-MVP] share.request missing payloadTransferInfo.port');
@@ -2969,6 +3235,24 @@ export class DeviceSession implements SystemMediaExporter {
       console.error('[KDE-MVP] share.request but no context for file save');
       return;
     }
+
+    // ── Reuse the active batch job, else start a new one (Android receiveFile) ──
+    let job: IncomingJobState;
+    if (hasNumberOfFiles && !isOpen && this.incomingJob !== null && !this.incomingJob.done) {
+      job = this.incomingJob;
+    } else {
+      job = this.newIncomingJob();
+      this.incomingJob = job;
+    }
+    if (!hasNumberOfFiles) {
+      job.totalFiles = 1;
+      job.totalPayloadSize = payloadSize;
+    }
+    if (typeof body.totalPayloadSize === 'number' && body.totalPayloadSize > 0) {
+      job.totalPayloadSize = body.totalPayloadSize;
+    }
+    job.currentFileName = filename;
+    job.currentFileIndex = job.currentFileIndex + 1;
 
     const payloadPort: number = packet.payloadTransferInfo.port;
     const peerIp: string = this.peerDevice.ip;
@@ -3010,6 +3294,7 @@ export class DeviceSession implements SystemMediaExporter {
       let recvResolve: (() => void) | null = null;
       let recvReject: ((e: Error) => void) | null = null;
       let recvTimer: number = -1;
+      let lastProgressTime: number = Date.now();
 
       tls.on('message', (v: socket.SocketMessageInfo) => {
         const srcLen: number = v.message.byteLength;
@@ -3021,6 +3306,26 @@ export class DeviceSession implements SystemMediaExporter {
         copy.set(src);
         chunks.push(copy);
         totalRead += srcLen;
+        job.totalReceived += srcLen;
+
+        if (job.cancelled) {
+          clearTimeout(recvTimer);
+          recvReject?.(new Error('Transfer cancelled'));
+          return;
+        }
+
+        // Progress: Android (totalReceived * 100 / totalPayloadSize), ≥500ms throttle
+        const pct: number = job.totalPayloadSize > 0
+          ? Math.round((job.totalReceived * 100) / job.totalPayloadSize)
+          : 100;
+        const now: number = Date.now();
+        if (pct !== job.prevProgress && (pct === 100 || now - job.lastProgressTime >= 500)) {
+          job.prevProgress = pct;
+          job.lastProgressTime = now;
+          lastProgressTime = now;
+          this.notifyIncomingProgress(job, pct, false);
+        }
+
         if (totalRead >= payloadSize && recvResolve) {
           clearTimeout(recvTimer);
           recvResolve();
@@ -3077,11 +3382,17 @@ export class DeviceSession implements SystemMediaExporter {
         recvTimer = setTimeout(() => {
           reject(new Error('Payload read timeout'));
         }, 30000) as number;
+        job.cancelRead = () => {
+          clearTimeout(recvTimer);
+          reject(new Error('Transfer cancelled'));
+        };
         if (totalRead >= payloadSize) {
           clearTimeout(recvTimer);
+          job.cancelRead = null;
           resolve();
         }
       });
+      job.cancelRead = null;
 
       // 5. Write chunks to temp file then close
       for (let i = 0; i < chunks.length; i++) {
@@ -3126,19 +3437,28 @@ export class DeviceSession implements SystemMediaExporter {
         console.warn('[KDE-MVP] DOWNLOAD mode failed, file stays in temp:', JSON.stringify(pickerErr));
       }
 
-      // 7. Notify user
-      AppNotifier.getInstance().notifyFileReceived(safeName, finalPath).catch((e: Error) => {
-        console.error('[KDE-MVP] File receive notify failed:', e.message);
-      });
+      // 7. Track completed file on the job and show progress/finish banners.
+      job.lastFilePath = finalPath;
+      job.lastFileName = safeName;
 
-      this.emit(this.paired ? 'paired' : 'connected', `收到文件: ${safeName}`);
+      if (job.cancelled) {
+        AppNotifier.getInstance().cancelTransferNotification(job.jobId);
+      } else if (job.currentFileIndex >= job.totalFiles) {
+        this.completeIncomingJob(job);
+      } else {
+        this.scheduleIdleFinalize(job);
+      }
 
     } catch (e) {
       console.error('[KDE-MVP] File receive failed:', JSON.stringify(e));
       if (outFile) {
         try { fileIo.closeSync(outFile); } catch (_e) {}
       }
-      this.emit('error', `接收文件失败: ${filename}`);
+      if (job.cancelled) {
+        AppNotifier.getInstance().cancelTransferNotification(job.jobId);
+      } else {
+        this.failIncomingJob(job, String(e));
+      }
     } finally {
       try { tls?.close(); } catch (_e) {}
       try { tcp?.close(); } catch (_e) {}
@@ -3775,11 +4095,13 @@ export class DeviceSession implements SystemMediaExporter {
 
   /**
    * Send a file using the dual-channel approach (matching Android LanLink.sendPacket).
+   * @param cancelToken optional shared flag — when set, the transfer aborts gracefully.
    */
   public async sendPacketWithPayload(
     body: KdeShareRequestBody,
     filePath: string,
-    onProgress?: (percent: number) => void
+    onProgress?: (percent: number) => void,
+    cancelToken?: TransferCancelToken | null
   ): Promise<void> {
     if (!this.isPluginEnabled(PLUGIN_SHARE)) {
       throw new Error('Share plugin disabled for this device');
@@ -3790,6 +4112,10 @@ export class DeviceSession implements SystemMediaExporter {
 
     // 1. Open payload TLS server
     await this.openPayloadTlsPort();
+    if (cancelToken?.cancelled) {
+      this.cleanupPayload();
+      throw new Error('Transfer cancelled');
+    }
 
     // 2. Get file size
     let fileSize: number = 0;
@@ -3827,14 +4153,24 @@ export class DeviceSession implements SystemMediaExporter {
           reject(new Error('Payload connection timed out'));
         }, 10000) as number;
 
+        const cancelPoll: number = setInterval(() => {
+          if (cancelToken?.cancelled) {
+            clearTimeout(timeout);
+            clearInterval(cancelPoll);
+            reject(new Error('Transfer cancelled'));
+          }
+        }, 200) as number;
+
         this.payloadServer!.on('connect', (client: socket.TLSSocketConnection) => {
           clearTimeout(timeout);
+          clearInterval(cancelPoll);
           this.payloadConnection = client;
           resolve(client);
         });
 
         this.payloadServer!.on('error', (err: Object) => {
           clearTimeout(timeout);
+          clearInterval(cancelPoll);
           reject(new Error('Payload server error'));
         });
       });
@@ -3858,6 +4194,9 @@ export class DeviceSession implements SystemMediaExporter {
       let bytesRead: number = 0;
       let chunk: ArrayBuffer;
       while (true) {
+        if (cancelToken?.cancelled) {
+          throw new Error('Transfer cancelled');
+        }
         try {
           bytesRead = fileIo.readSync(file.fd, buf);
         } catch (readErr) {

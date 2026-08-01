@@ -57,6 +57,10 @@ export const OUTGOING_CAPABILITIES: string[] = [
   'kdeconnect.pair',
   'kdeconnect.ping',
   'kdeconnect.battery',
+  // Must advertise so Android loads FindMyPhonePlugin (pluginsForCapabilities
+  // requires peer.outgoing ∩ Android supportedPacketTypes). Without this,
+  // ring packets arrive but Android ignores them — no plugin registered.
+  'kdeconnect.findmyphone.request',
   'kdeconnect.share.request',
   'kdeconnect.mpris',
   'kdeconnect.mpris.request',
@@ -159,6 +163,10 @@ export interface KdeShareRequestBody {
   totalPayloadSize: number;
   lastModified?: number;
   open?: boolean;
+  /** SharePlugin receiveText — peer shared a text snippet. */
+  text?: string;
+  /** SharePlugin receiveUrl — peer shared a link. */
+  url?: string;
 }
 
 /** Per-file info used by FileSendJob before constructing packets. */
@@ -167,6 +175,41 @@ export interface FileSendInfo {
   displayName: string;
   size: number;
   lastModified: number;
+}
+
+/** Direction of a file transfer (Android CompositeUploadFileJob / CompositeReceiveFileJob). */
+export type FileTransferRole = 'send' | 'receive';
+
+/** Shared cancel flag between UI / notification action and the transfer loop. */
+export interface TransferCancelToken {
+  cancelled: boolean;
+}
+
+/** Progress payload for the ongoing transfer notification (Android Upload/ReceiveNotification). */
+export interface FileTransferNotifyInfo {
+  role: FileTransferRole;
+  jobId: string;
+  deviceName: string;
+  /** Peer device id — used by the notification cancel action to find the session. */
+  deviceId: string;
+  fileName: string;
+  fileIndex: number;
+  totalFiles: number;
+  percent: number;
+}
+
+/** Result payload for the finished / failed transfer notification. */
+export interface FileTransferResultInfo {
+  role: FileTransferRole;
+  jobId: string;
+  deviceName: string;
+  deviceId: string;
+  numFiles: number;
+  totalFiles: number;
+  /** Last received file name — enables open/share actions (Android setURI). */
+  fileName?: string;
+  /** Last received file path — enables open/share actions (Android setURI). */
+  filePath?: string;
 }
 
 /** Payload transfer metadata sent in the JSON packet (Android: payloadTransferInfo). */

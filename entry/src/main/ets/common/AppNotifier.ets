@@ -1,9 +1,15 @@
 import { common, wantAgent, WantAgent } from '@kit.AbilityKit';
 import { notificationManager } from '@kit.NotificationKit';
 import { BusinessError } from '@kit.BasicServicesKit';
+import { image } from '@kit.ImageKit';
+import { fileIo } from '@kit.CoreFileKit';
+import {
+  FileTransferNotifyInfo,
+  FileTransferResultInfo
+} from '../service/KdeTypes';
 
 /**
- * Local system notifications (Ping, Find My Phone).
+ * Local system notifications (Ping, Find My Phone, file received).
  * Requests notification enablement once; failures are logged, never thrown to callers.
  * Tap on a notification brings EntryAbility to the foreground via WantAgent.
  */
@@ -19,6 +25,13 @@ export class AppNotifier {
    * return a ContinuousTaskNotification id (enum startBackgroundRunning path).
    */
   public static readonly PERSISTENT_NOTIFY_ID_FOR_PROGRESS: number = 1800;
+  /**
+   * Stable id range for file-transfer notifications (Android Upload/ReceiveNotification).
+   * Each jobId maps to one id so progress updates replace the same banner and the
+   * cancel action can remove it.
+   */
+  private static readonly TRANSFER_NOTIFY_BASE: number = 6000;
+  private static readonly TRANSFER_NOTIFY_SPAN: number = 900;
 
   public static getInstance(): AppNotifier {
     if (!AppNotifier.instance) {
@@ -212,6 +225,7 @@ export class AppNotifier {
 
   /**
    * Show a file-received notification with type-aware text, tap-to-open, and share button.
+   * Image files use NOTIFICATION_CONTENT_PICTURE so the tray can expand to a big preview.
    * Matches Android ReceiveNotification.setURI + setFinished pattern.
    */
   public async notifyFileReceived(filename: string, filePath: string): Promise<void> {
@@ -230,8 +244,8 @@ export class AppNotifier {
 
     // Detect MIME type from extension
     const mime: string = this.getMimeType(filename);
-    const fileUri: string = filePath.startsWith('file://') ? filePath : `file://${filePath}`;
     const label: string = this.getFileTypeLabel(filename);
+    const isImage: boolean = this.isImageMime(mime);
 
     // Build view WantAgent — same pattern as buildOpenAppAgent (known working)
     let viewAgent: WantAgent | undefined;
@@ -274,18 +288,55 @@ export class AppNotifier {
       console.warn('[Notify] share agent failed:', JSON.stringify(e));
     }
 
-    const request: notificationManager.NotificationRequest = {
-      id: id,
-      notificationSlotType: notificationManager.SlotType.SOCIAL_COMMUNICATION,
-      content: {
+    // Prefer picture-style notification for images (expand → big preview).
+    // SDK: picture PixelMap total bytes ≤ 2MB (≈700×700 RGBA) — use ~600px so the
+    // expanded preview is a real large image, not a thumbnail.
+    let pictureMap: image.PixelMap | null = null;
+    let largeIconMap: image.PixelMap | null = null;
+    if (isImage) {
+      pictureMap = await this.decodeImageForNotification(filePath, AppNotifier.NOTIFY_PICTURE_MAX_EDGE);
+      if (pictureMap) {
+        // Smaller square for collapsed-tray largeIcon (right-side thumbnail).
+        // largeIcon limit is 192KB (recommended 128×128).
+        largeIconMap = await this.decodeImageForNotification(filePath, AppNotifier.NOTIFY_LARGE_ICON_EDGE);
+      } else {
+        console.warn(`[Notify] image decode failed, falling back to text: ${filename}`);
+      }
+    }
+
+    let content: notificationManager.NotificationContent;
+    if (pictureMap !== null) {
+      content = {
+        notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_PICTURE,
+        picture: {
+          title: `${label}接收完成`,
+          text: filename,
+          additionalText: '下拉通知可展开查看大图',
+          picture: pictureMap,
+          briefText: filename,
+          expandedTitle: `${label}接收完成 · 查看大图`
+        }
+      };
+    } else {
+      content = {
         notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
         normal: {
           title: `${label}接收完成`,
           text: `点按打开 "${filename}"`
         }
-      },
+      };
+    }
+
+    const request: notificationManager.NotificationRequest = {
+      id: id,
+      notificationSlotType: notificationManager.SlotType.SOCIAL_COMMUNICATION,
+      content: content,
       tapDismissed: true
     };
+
+    if (largeIconMap !== null) {
+      request.largeIcon = largeIconMap;
+    }
 
     if (viewAgent) {
       request.wantAgent = viewAgent;
@@ -310,10 +361,149 @@ export class AppNotifier {
 
     try {
       await notificationManager.publish(request);
-      console.info(`[Notify] file-received published: ${filename}`);
+      console.info(
+        `[Notify] file-received published: ${filename} picture=${pictureMap !== null}`
+      );
     } catch (e) {
       let err = e as BusinessError;
       console.error(`[Notify] file-received publish failed: code=${err.code} ${err.message}`);
+      // If picture style is rejected by the system, retry as plain text once.
+      if (pictureMap) {
+        try {
+          const fallback: notificationManager.NotificationRequest = {
+            id: id,
+            notificationSlotType: notificationManager.SlotType.SOCIAL_COMMUNICATION,
+            content: {
+              notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
+              normal: {
+                title: `${label}接收完成`,
+                text: `点按打开 "${filename}"`
+              }
+            },
+            tapDismissed: true
+          };
+          if (viewAgent) {
+            fallback.wantAgent = viewAgent;
+          }
+          await notificationManager.publish(fallback);
+          console.info(`[Notify] file-received text fallback published: ${filename}`);
+        } catch (e2) {
+          let err2 = e2 as BusinessError;
+          console.error(`[Notify] file-received fallback failed: code=${err2.code} ${err2.message}`);
+        }
+      }
+    }
+  }
+
+  /**
+   * Expanded-preview image edge. SDK caps picture pixel bytes at 2MB —
+   * 600×600 RGBA ≈ 1.37MB, well under limit and visibly larger than the thumbnail.
+   */
+  private static readonly NOTIFY_PICTURE_MAX_EDGE: number = 600;
+  /** Collapsed-tray largeIcon recommendation (192KB limit, 128×128). */
+  private static readonly NOTIFY_LARGE_ICON_EDGE: number = 128;
+
+  private isImageMime(mime: string): boolean {
+    return mime.startsWith('image/');
+  }
+
+  /**
+   * Decode a local image file into a downscaled PixelMap for notification use.
+   * Returns null on failure so caller can fall back to text notification.
+   */
+  private async decodeImageForNotification(
+    filePath: string,
+    maxEdge: number
+  ): Promise<image.PixelMap | null> {
+    let path: string = filePath;
+    if (path.startsWith('file://')) {
+      path = path.substring(7);
+    }
+    if (path.length === 0) {
+      return null;
+    }
+
+    try {
+      const src: image.ImageSource = image.createImageSource(path);
+      try {
+        return await this.createScaledPixelMap(src, maxEdge);
+      } finally {
+        try {
+          src.release();
+        } catch (_r) {
+        }
+      }
+    } catch (_e) {
+      // Fallback via fd (some sandbox paths need openSync)
+      try {
+        const file = fileIo.openSync(path, fileIo.OpenMode.READ_ONLY);
+        try {
+          const src2: image.ImageSource = image.createImageSource(file.fd);
+          try {
+            return await this.createScaledPixelMap(src2, maxEdge);
+          } finally {
+            try {
+              src2.release();
+            } catch (_r2) {
+            }
+          }
+        } finally {
+          try {
+            fileIo.closeSync(file);
+          } catch (_c) {
+          }
+        }
+      } catch (e2) {
+        console.warn('[Notify] decodeImageForNotification failed:', JSON.stringify(e2));
+        return null;
+      }
+    }
+  }
+
+  /**
+   * Scale so the longer edge ≤ maxEdge (keeps aspect ratio).
+   * picture limit is 2MB; 600px RGBA ≈ 1.37MB. largeIcon stays at 128px.
+   */
+  private async createScaledPixelMap(
+    src: image.ImageSource,
+    maxEdge: number
+  ): Promise<image.PixelMap | null> {
+    let targetW: number = maxEdge;
+    let targetH: number = maxEdge;
+    try {
+      const info = await src.getImageInfo();
+      const w: number = info.size.width;
+      const h: number = info.size.height;
+      if (w > 0 && h > 0) {
+        if (w >= h) {
+          targetW = Math.min(w, maxEdge);
+          targetH = Math.max(1, Math.round(h * (targetW / w)));
+        } else {
+          targetH = Math.min(h, maxEdge);
+          targetW = Math.max(1, Math.round(w * (targetH / h)));
+        }
+      }
+    } catch (_infoErr) {
+      // keep defaults
+    }
+
+    const opts: image.DecodingOptions = {
+      desiredSize: {
+        width: targetW,
+        height: targetH
+      },
+      editable: false
+    };
+    try {
+      return await src.createPixelMap(opts);
+    } catch (e) {
+      console.warn('[Notify] createPixelMap failed:', JSON.stringify(e));
+      try {
+        // Last resort: full decode (may fail publish if too large)
+        return await src.createPixelMap();
+      } catch (_e2) {
+        return null;
+      }
     }
   }
 
@@ -323,6 +513,7 @@ export class AppNotifier {
     const mimeMap: Record<string, string> = {
       'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png',
       'gif': 'image/gif', 'bmp': 'image/bmp', 'webp': 'image/webp',
+      'heic': 'image/heic', 'heif': 'image/heif',
       'mp4': 'video/mp4', 'avi': 'video/x-msvideo', 'mov': 'video/quicktime',
       'mkv': 'video/x-matroska', 'mp3': 'audio/mpeg', 'wav': 'audio/wav',
       'aac': 'audio/aac', 'flac': 'audio/flac', 'ogg': 'audio/ogg',
@@ -340,7 +531,7 @@ export class AppNotifier {
   /** Human-readable file type label. */
   private getFileTypeLabel(filename: string): string {
     const ext: string = filename.substring(filename.lastIndexOf('.') + 1).toLowerCase();
-    if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp'].includes(ext)) {
+    if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'heic', 'heif'].includes(ext)) {
       return '图片';
     }
     if (['mp4', 'avi', 'mov', 'mkv'].includes(ext)) {
@@ -572,5 +763,255 @@ export class AppNotifier {
   public static isMirroredLocalNotifyId(localId: number): boolean {
     return localId >= AppNotifier.MIRROR_NOTIFY_BASE &&
       localId < AppNotifier.MIRROR_NOTIFY_BASE + AppNotifier.MIRROR_NOTIFY_SPAN;
+  }
+
+  /**
+   * Stable local notification id for a file-transfer jobId.
+   * Reused across progress updates so the banner updates in place (Android: one
+   * notification per job). Range: [6000, 6900).
+   */
+  public static transferNotifyId(jobId: string): number {
+    let h = 0;
+    for (let i = 0; i < jobId.length; i++) {
+      h = ((h << 5) - h) + jobId.charCodeAt(i);
+      h = h | 0;
+    }
+    const abs = h < 0 ? -h : h;
+    return AppNotifier.TRANSFER_NOTIFY_BASE + (abs % AppNotifier.TRANSFER_NOTIFY_SPAN);
+  }
+
+  /** Remove the ongoing transfer notification for a jobId. */
+  public cancelTransferNotification(jobId: string): void {
+    try {
+      notificationManager.cancel(AppNotifier.transferNotifyId(jobId));
+    } catch (_e) {
+      // ignore if already gone
+    }
+  }
+
+  /**
+   * Received-text banner (Android SharePlugin.receiveText → Toast).
+   * Text was already saved to the clipboard; the banner confirms it.
+   */
+  public async notifyTextReceived(text: string, peerName: string): Promise<void> {
+    let ok = await this.ensureEnabled();
+    if (!ok) {
+      console.warn('[Notify] notifications disabled; skip text-received banner');
+      return;
+    }
+    let id = this.nextId++;
+    if (this.nextId > 9000) {
+      this.nextId = 2000;
+    }
+    let agent: WantAgent | undefined = await this.buildOpenAppAgent(id, 'received_text');
+    let snippet: string = text.trim();
+    if (snippet.length > 60) {
+      snippet = snippet.substring(0, 60) + '…';
+    }
+    const request: notificationManager.NotificationRequest = {
+      id: id,
+      notificationSlotType: notificationManager.SlotType.SOCIAL_COMMUNICATION,
+      content: {
+        notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
+        normal: {
+          title: `${peerName} 发来文本`,
+          text: `已保存到剪贴板: ${snippet}`
+        }
+      },
+      tapDismissed: true
+    };
+    if (agent) {
+      request.wantAgent = agent;
+    }
+    try {
+      await notificationManager.publish(request);
+      console.info(`[Notify] text-received published from ${peerName}`);
+    } catch (e) {
+      let err = e as BusinessError;
+      console.error(`[Notify] text-received publish failed: code=${err.code} ${err.message}`);
+    }
+  }
+
+  /**
+   * Ongoing file-transfer banner (Android Upload/ReceiveNotification).
+   * Uses the system downloadTemplate so the tray shows a real progress bar;
+   * falls back to plain text when the template is unavailable.
+   * Cancel action routes to EntryAbility → KdeService.cancelFileTransfer.
+   */
+  public async notifyTransferProgress(info: FileTransferNotifyInfo): Promise<void> {
+    let ok = await this.ensureEnabled();
+    if (!ok) {
+      console.warn('[Notify] notifications disabled; skip transfer progress banner');
+      return;
+    }
+    if (!this.context) {
+      return;
+    }
+    const id: number = AppNotifier.transferNotifyId(info.jobId);
+    const dirLabel: string = info.role === 'send' ? '发送' : '接收';
+    const title: string = info.totalFiles > 1
+      ? `${dirLabel} ${info.fileIndex} / ${info.totalFiles} 个文件到 ${info.deviceName}`
+      : `${dirLabel}文件到 ${info.deviceName}`;
+    const bodyText: string = `${info.fileName} · ${info.percent}%`;
+
+    let openAgent: WantAgent | undefined = await this.buildOpenAppAgent(id, 'file_transfer');
+
+    // Cancel action (Android ShareBroadcastReceiver ACTION_CANCEL_SHARE)
+    let cancelAgent: WantAgent | undefined;
+    try {
+      cancelAgent = await wantAgent.getWantAgent({
+        wants: [{
+          deviceId: '',
+          bundleName: this.context.abilityInfo.bundleName,
+          moduleName: this.context.abilityInfo.moduleName,
+          abilityName: this.context.abilityInfo.name,
+          action: 'ohos.want.action.home',
+          parameters: {
+            'cancelTransfer': info.jobId,
+            'cancelTransferRole': info.role,
+            'cancelTransferDevice': info.deviceId
+          }
+        }],
+        operationType: wantAgent.OperationType.START_ABILITY,
+        requestCode: id + 1,
+        wantAgentFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
+      });
+    } catch (e) {
+      console.warn('[Notify] transfer-cancel agent failed:', JSON.stringify(e));
+    }
+
+    const request: notificationManager.NotificationRequest = {
+      id: id,
+      notificationSlotType: notificationManager.SlotType.SERVICE_INFORMATION,
+      content: {
+        notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
+        normal: {
+          title: title,
+          text: bodyText
+        }
+      },
+      isOngoing: true,
+      isAlertOnce: false,
+      tapDismissed: false
+    };
+
+    // Progress bar via the system download template (progressValue 0–100).
+    const clampPct: number = Math.max(0, Math.min(100, info.percent));
+    try {
+      request.template = {
+        name: 'downloadTemplate',
+        data: {
+          'title': title,
+          'fileName': info.fileName,
+          'progressValue': clampPct
+        }
+      };
+    } catch (_te) {
+      // template ignored — plain text still shows progress text
+    }
+
+    if (openAgent) {
+      request.wantAgent = openAgent;
+    }
+    if (cancelAgent) {
+      request.actionButtons = [{
+        title: '取消',
+        wantAgent: cancelAgent
+      } as notificationManager.NotificationActionButton];
+    }
+
+    try {
+      await notificationManager.publish(request);
+      console.info(`[Notify] transfer progress ${info.role} ${info.jobId} ${info.percent}%`);
+    } catch (e) {
+      let err = e as BusinessError;
+      console.error(`[Notify] transfer progress publish failed: code=${err.code} ${err.message}`);
+    }
+  }
+
+  /**
+   * Transfer finished banner (Android UploadNotification.setFinished /
+   * ReceiveNotification.setFinished + setURI).
+   * Single received file with a known path reuses the rich open/share banner
+   * (image preview included); everything else gets a plain summary banner.
+   */
+  public async notifyTransferFinished(info: FileTransferResultInfo): Promise<void> {
+    // Replace the ongoing banner first (Android: same notification id).
+    this.cancelTransferNotification(info.jobId);
+    if (info.role === 'receive' && info.fileName && info.filePath && info.filePath.length > 0 &&
+      info.numFiles <= 1) {
+      await this.notifyFileReceived(info.fileName, info.filePath);
+      return;
+    }
+    let ok = await this.ensureEnabled();
+    if (!ok) {
+      console.warn('[Notify] notifications disabled; skip transfer finished banner');
+      return;
+    }
+    let id: number = AppNotifier.transferNotifyId(info.jobId);
+    const title: string = info.role === 'send'
+      ? `已发送 ${info.numFiles} 个文件到 ${info.deviceName}`
+      : `已从 ${info.deviceName} 接收 ${info.numFiles} 个文件`;
+    let agent: WantAgent | undefined = await this.buildOpenAppAgent(id, 'file_transfer');
+    const request: notificationManager.NotificationRequest = {
+      id: id,
+      notificationSlotType: notificationManager.SlotType.SERVICE_INFORMATION,
+      content: {
+        notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
+        normal: {
+          title: title,
+          text: info.role === 'send' ? '发送完成' : '接收完成'
+        }
+      },
+      tapDismissed: true
+    };
+    if (agent) {
+      request.wantAgent = agent;
+    }
+    try {
+      await notificationManager.publish(request);
+      console.info(`[Notify] transfer finished ${info.role} ${info.jobId} n=${info.numFiles}`);
+    } catch (e) {
+      let err = e as BusinessError;
+      console.error(`[Notify] transfer finished publish failed: code=${err.code} ${err.message}`);
+    }
+  }
+
+  /** Transfer failed banner (Android UploadNotification.setFailed / ReceiveNotification.setFailed). */
+  public async notifyTransferFailed(info: FileTransferResultInfo): Promise<void> {
+    this.cancelTransferNotification(info.jobId);
+    let ok = await this.ensureEnabled();
+    if (!ok) {
+      console.warn('[Notify] notifications disabled; skip transfer failed banner');
+      return;
+    }
+    let id: number = AppNotifier.transferNotifyId(info.jobId);
+    const failed: number = Math.max(1, info.totalFiles - info.numFiles);
+    const title: string = info.role === 'send'
+      ? `发送失败 · ${failed}/${info.totalFiles} 个文件未发送到 ${info.deviceName}`
+      : `接收失败 · 未从 ${info.deviceName} 收到 ${failed}/${info.totalFiles} 个文件`;
+    let agent: WantAgent | undefined = await this.buildOpenAppAgent(id, 'file_transfer');
+    const request: notificationManager.NotificationRequest = {
+      id: id,
+      notificationSlotType: notificationManager.SlotType.OTHER_TYPES,
+      content: {
+        notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
+        normal: {
+          title: title,
+          text: '传输失败'
+        }
+      },
+      tapDismissed: true
+    };
+    if (agent) {
+      request.wantAgent = agent;
+    }
+    try {
+      await notificationManager.publish(request);
+      console.info(`[Notify] transfer failed ${info.role} ${info.jobId}`);
+    } catch (e) {
+      let err = e as BusinessError;
+      console.error(`[Notify] transfer failed publish failed: code=${err.code} ${err.message}`);
+    }
   }
 }
