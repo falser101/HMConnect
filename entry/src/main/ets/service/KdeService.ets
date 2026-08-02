@@ -16,6 +16,7 @@ import {
 } from './KdeTypes';
 import { DeviceStore } from '../store/DeviceStore';
 import { PluginSettingsStore } from '../store/PluginSettingsStore';
+import { PluginPrefsStore } from '../store/PluginPrefsStore';
 import { SettingsStore } from '../store/SettingsStore';
 
 /**
@@ -51,6 +52,11 @@ export class KdeService {
     await DeviceStore.getInstance().init(context);
     await PluginSettingsStore.getInstance().init(context);
     await SettingsStore.getInstance().init(context);
+    // Persisted picker folder grants need re-activation after each start
+    PluginPrefsStore.getInstance().ensureInit(context).then(() => {
+      PluginPrefsStore.getInstance().activateAllShareDestinationDirs().catch(() => {
+      });
+    });
     // Apply user-configured device name if present
     const customName: string = SettingsStore.getInstance().getDeviceName();
     if (customName.length > 0) {

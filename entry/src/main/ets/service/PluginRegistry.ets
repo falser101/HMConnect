@@ -4,6 +4,7 @@
  *
  * Keys are stable preference ids (not Android class names).
  */
+import { Permissions } from '@kit.AbilityKit';
 
 export const PLUGIN_CLIPBOARD: string = 'clipboard';
 export const PLUGIN_SHARE: string = 'share';
@@ -33,6 +34,20 @@ export interface PluginMeta {
   /** Packet types this plugin may send. */
   outgoingTypes: string[];
 }
+
+/**
+ * Android Plugin.requiredPermissions → runtime (user_grant) permission.
+ * A plugin is listed on the detail page "needs permission" section when it
+ * is enabled but its permission is not granted (tap → explanation dialog).
+ */
+export interface PluginPermissionDef {
+  pluginKey: string;
+  permission: Permissions;
+}
+
+export const PLUGIN_PERMISSION_DEFS: PluginPermissionDef[] = [
+  { pluginKey: PLUGIN_FIND_MY_PHONE, permission: 'ohos.permission.CAMERA' }
+];
 
 /** Implemented plugins shown in per-device plugin settings. */
 export const IMPLEMENTED_PLUGINS: PluginMeta[] = [

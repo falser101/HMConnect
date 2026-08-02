@@ -1,9 +1,10 @@
 import socket from '@ohos.net.socket';
 import pasteboard from '@ohos.pasteboard';
-import { fileIo, picker, fileUri } from '@kit.CoreFileKit';
+import { fileIo, picker, fileUri, fileShare } from '@kit.CoreFileKit';
 import { common } from '@kit.AbilityKit';
 import { avSession } from '@kit.AVSessionKit';
 import { wifiManager } from '@kit.ConnectivityKit';
+import { image } from '@kit.ImageKit';
 import { AppNotifier } from '../common/AppNotifier';
 import {
   KdeDevice,
@@ -195,6 +196,15 @@ export class DeviceSession implements SystemMediaExporter {
   private onMprisPlayerListChange?: (names: string[]) => void;
   /** Peer supports album-art payload transfer. */
   private supportAlbumArtPayload: boolean = false;
+  /** Decoded app-icon PixelMaps for mirrored notifications, keyed by MD5. */
+  private iconCache: Map<string, image.PixelMap> = new Map();
+  /**
+   * setVolume debounce — the peer (desktop volume slider) bursts many
+   * mpris.request setVolume packets; coalesce into one apply + one echo.
+   */
+  private volumeDebounceTimer: number = -1;
+  private pendingVolumePercent: number = -1;
+  private volumePlayerName: string = '';
   /** Remote system volume sinks (Android SystemVolumePlugin). */
   private systemVolumeSinks: SystemVolumeSink[] = [];
   private onSystemVolumeChange?: (sinks: SystemVolumeSink[]) => void;
@@ -224,6 +234,8 @@ export class DeviceSession implements SystemMediaExporter {
   private lineBuffer: string = '';
   private context: common.UIAbilityContext | null = null;
   private certPem: string = '';
+  /** Peer X.509 certificate in DER form (Android SslHelper.parseCertificate). */
+  private remoteCertDer: Uint8Array | null = null;
   private keyPem: string = '';
   /** Monotonic id so stale TLS/path callbacks cannot clobber a newer session. */
   private sessionGen: number = 0;
@@ -702,12 +714,20 @@ export class DeviceSession implements SystemMediaExporter {
         try {
           if (fromOutbound && this.outTlsConn) {
             const raw = await this.outTlsConn.getRemoteCertificate();
+            const der = VerificationKeyHelper.derFromBlob(raw);
+            if (der) {
+              this.remoteCertDer = der;
+            }
             const pk = await VerificationKeyHelper.pubKeyFromCertBlob(raw);
             if (pk) {
               this.remotePubKey = pk;
             }
           } else if (this.tlsSocket) {
             const raw = await this.tlsSocket.getRemoteCertificate();
+            const der = VerificationKeyHelper.derFromBlob(raw);
+            if (der) {
+              this.remoteCertDer = der;
+            }
             const pk = await VerificationKeyHelper.pubKeyFromCertBlob(raw);
             if (pk) {
               this.remotePubKey = pk;
@@ -740,6 +760,22 @@ export class DeviceSession implements SystemMediaExporter {
   /** Stop ringing when user opens the app after a Find My Phone alert. */
   public stopFindMyPhone(): void {
     FindMyPhoneHelper.getInstance().stop();
+  }
+
+  /**
+   * Android SslHelper.getCertificateHash: SHA-256 fingerprint of this device's
+   * X.509 certificate (colon-separated hex).
+   */
+  public async myCertificateFingerprint(): Promise<string> {
+    return VerificationKeyHelper.fingerprintFromPem(this.certPem);
+  }
+
+  /** SHA-256 fingerprint of the peer's X.509 certificate. */
+  public async remoteCertificateFingerprint(): Promise<string> {
+    if (this.remoteCertDer === null) {
+      return '';
+    }
+    return VerificationKeyHelper.fingerprintFromDer(this.remoteCertDer);
   }
 
   /** Make the remote device ring (Android FindMyPhonePlugin / FindRemoteDevice). */
@@ -1760,15 +1796,28 @@ export class DeviceSession implements SystemMediaExporter {
       return;
     }
 
-    // Album art request: we only export string albumArtUrl (no bitmap payload yet)
+    // Album art request: serve the local bitmap as a payload (Android
+    // MprisReceiverPlugin.sendAlbumArt), falling back to re-pushing metadata.
     if (typeof b['albumArtUrl'] === 'string' && (b['albumArtUrl'] as string).length > 0) {
-      console.info(`[KDE-MVP] mpris.request albumArtUrl player=${playerName}`);
-      const snap = monitor.getSnapshot(playerName);
-      if (snap) {
-        this.pushLocalMetadata(snap);
-      } else {
-        console.warn(`[KDE-MVP] mpris.request albumArt: unknown player ${playerName}`);
-      }
+      const artUrl: string = b['albumArtUrl'] as string;
+      console.info(`[KDE-MVP] mpris.request albumArtUrl player=${playerName} url=${artUrl}`);
+      monitor.encodeAlbumArt(playerName).then((bytes: Uint8Array | null) => {
+        if (bytes !== null && bytes.length > 0) {
+          return this.sendMprisAlbumArtPayload(playerName, artUrl, bytes);
+        }
+        console.warn(`[KDE-MVP] mpris.request albumArt: no bitmap for player ${playerName}`);
+        const snap = monitor.getSnapshot(playerName);
+        if (snap) {
+          this.pushLocalMetadata(snap);
+        }
+        return Promise.resolve();
+      }).catch((err: Object) => {
+        console.error(`[KDE-MVP] album art serve fail: ${JSON.stringify(err)}`);
+        const snap = monitor.getSnapshot(playerName);
+        if (snap) {
+          this.pushLocalMetadata(snap);
+        }
+      });
       return;
     }
 
@@ -1822,11 +1871,34 @@ export class DeviceSession implements SystemMediaExporter {
     }
 
     if (typeof b['setVolume'] === 'number') {
-      console.info(`[KDE-MVP] mpris.request setVolume ignored player=${playerName} vol=${b['setVolume']}`);
-      const snap = monitor.getSnapshot(playerName);
-      if (snap) {
-        this.pushLocalMetadata(snap);
+      // Desktop volume slider floods setVolume — coalesce to one apply + echo.
+      const vol: number = Math.max(0, Math.min(100, b['setVolume'] as number));
+      this.pendingVolumePercent = vol;
+      this.volumePlayerName = playerName;
+      if (this.volumeDebounceTimer >= 0) {
+        clearTimeout(this.volumeDebounceTimer);
       }
+      this.volumeDebounceTimer = setTimeout(() => {
+        this.volumeDebounceTimer = -1;
+        const target: number = this.pendingVolumePercent;
+        const pname: string = this.volumePlayerName;
+        this.pendingVolumePercent = -1;
+        this.volumePlayerName = '';
+        console.info(`[KDE-MVP] mpris.request setVolume player=${pname} vol=${target}`);
+        // Best-effort local media volume (Android MprisReceiverPlayer.setVolume).
+        monitor.setLocalVolume(target).then(() => {
+          const snap = monitor.getSnapshot(pname);
+          if (snap) {
+            this.pushLocalMetadata(snap);
+          }
+        }).catch((err: Object) => {
+          console.warn(`[KDE-MVP] setVolume rejected (platform limit): ${JSON.stringify(err)}`);
+          const snap = monitor.getSnapshot(pname);
+          if (snap) {
+            this.pushLocalMetadata(snap);
+          }
+        });
+      }, 200) as number;
       return;
     }
 
@@ -1864,7 +1936,7 @@ export class DeviceSession implements SystemMediaExporter {
     }
     const resp: Record<string, Object> = {
       'playerList': names,
-      'supportAlbumArtPayload': false
+      'supportAlbumArtPayload': true
     };
     this.sendMprisStatus(resp);
     console.info(`[KDE-MVP] export playerList (${names.length}): ${names.join(', ')}`);
@@ -1892,7 +1964,8 @@ export class DeviceSession implements SystemMediaExporter {
       'canGoPrevious': snap.canGoPrevious,
       'canSeek': snap.canSeek,
       'volume': snap.volume,
-      'albumArtUrl': snap.albumArtUrl
+      'albumArtUrl': snap.albumArtUrl,
+      'supportAlbumArtPayload': true
     };
     console.info(
       `[KDE-MVP] export meta player="${snap.player}" bundle=${snap.bundleName} ` +
@@ -2970,7 +3043,7 @@ export class DeviceSession implements SystemMediaExporter {
     }
 
     if (type === PACKET_TYPE_NOTIFICATION) {
-      this.handleIncomingNotification(body as KdeNotificationBody);
+      this.handleIncomingNotification(body as KdeNotificationBody, packet);
       return;
     }
 
@@ -3098,7 +3171,7 @@ export class DeviceSession implements SystemMediaExporter {
    * Android ReceiveNotificationsPlugin.onPacketReceived:
    * require ticker + appName + id; skip silent; isCancel → dismiss local.
    */
-  private handleIncomingNotification(body: KdeNotificationBody): void {
+  private handleIncomingNotification(body: KdeNotificationBody, packet?: KdePacket<object>): void {
     if (!body) {
       return;
     }
@@ -3120,12 +3193,186 @@ export class DeviceSession implements SystemMediaExporter {
       console.warn('[KDE-MVP] notification packet lacks ticker/appName/id');
       return;
     }
-    const peerName = this.peerDevice?.deviceName ?? '';
-    AppNotifier.getInstance()
-      .notifyMirroredNotification(remoteId, String(body.appName), String(body.ticker), peerName)
-      .catch((e: Error) => {
-        console.error('[KDE-MVP] mirrored notify failed:', e.message);
+    const appName: string = String(body.appName);
+    const ticker: string = String(body.ticker);
+    const peerName: string = this.peerDevice?.deviceName ?? '';
+    // App icon: cached by MD5 hash, else fetch the payload over the side channel.
+    this.resolveNotificationIcon(body, packet).then((icon: image.PixelMap | null) => {
+      AppNotifier.getInstance()
+        .notifyMirroredNotification(remoteId, appName, ticker, peerName, icon)
+        .catch((e: Error) => {
+          console.error('[KDE-MVP] mirrored notify failed:', e.message);
+        });
+    }).catch((e: Error) => {
+      console.warn('[KDE-MVP] notification icon resolve failed:', e.message);
+      AppNotifier.getInstance()
+        .notifyMirroredNotification(remoteId, appName, ticker, peerName)
+        .catch((e2: Error) => {
+          console.error('[KDE-MVP] mirrored notify failed:', e2.message);
+        });
+    });
+  }
+
+  /**
+   * Android ReceiveNotificationsPlugin: the app-icon payload (payloadHash MD5)
+   * arrives on the standard side channel; reuses the cached icon when the hash
+   * repeats without a fresh payload.
+   */
+  private resolveNotificationIcon(
+    body: KdeNotificationBody,
+    packet?: KdePacket<object>
+  ): Promise<image.PixelMap | null> {
+    const hash: string = typeof body.payloadHash === 'string' ? body.payloadHash as string : '';
+    if (hash.length > 0 && this.iconCache.has(hash)) {
+      const cached = this.iconCache.get(hash);
+      return Promise.resolve(cached ?? null);
+    }
+    const port: number | undefined = packet?.payloadTransferInfo?.port;
+    const size: number = packet?.payloadSize ?? 0;
+    if (!port || size <= 0) {
+      return Promise.resolve(null);
+    }
+    return this.fetchPeerPayloadBytes(port, size).then((bytes: Uint8Array | null) => {
+      if (bytes === null || bytes.length === 0) {
+        return null;
+      }
+      return this.decodeIconPixelMap(bytes).then((pm: image.PixelMap | null) => {
+        if (pm !== null && hash.length > 0) {
+          this.cacheNotificationIcon(hash, pm);
+        }
+        return pm;
       });
+    });
+  }
+
+  private cacheNotificationIcon(hash: string, pm: image.PixelMap): void {
+    if (this.iconCache.size >= 24) {
+      this.iconCache.clear();
+    }
+    this.iconCache.set(hash, pm);
+  }
+
+  private async decodeIconPixelMap(bytes: Uint8Array): Promise<image.PixelMap | null> {
+    try {
+      const buf: ArrayBuffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      const source: image.ImageSource = image.createImageSource(buf);
+      return await source.createPixelMap();
+    } catch (e) {
+      console.warn('[KDE-MVP] decode notification icon failed:', JSON.stringify(e));
+      return null;
+    }
+  }
+
+  /** Read the peer's side-channel payload bytes over a TLS connection. */
+  private async fetchPeerPayloadBytes(port: number, size: number): Promise<Uint8Array | null> {
+    if (!this.peerDevice || size <= 0) {
+      return null;
+    }
+    const peerIp: string = this.peerDevice.ip;
+    let tcp: socket.TCPSocket | null = null;
+    let tls: socket.TLSSocket | null = null;
+    try {
+      tcp = socket.constructTCPSocketInstance();
+      await new Promise<void>((resolve: () => void, reject: (e: Error) => void) => {
+        tcp!.connect({
+          address: { address: peerIp, port: port, family: 1 },
+          timeout: 10000
+        }, (err: Object) => {
+          if (err) {
+            reject(new Error('Icon TCP connect failed'));
+          } else {
+            resolve();
+          }
+        });
+      });
+      tls = socket.constructTLSSocketInstance(tcp);
+      const secureOpts: socket.TLSSecureOptions = {
+        protocols: [socket.Protocol.TLSv12, socket.Protocol.TLSv13]
+      };
+      if (this.certPem.length > 0 && this.keyPem.length > 0) {
+        secureOpts.cert = this.certPem;
+        secureOpts.key = this.keyPem;
+      }
+      const chunks: Uint8Array[] = [];
+      let totalRead: number = 0;
+      let recvResolve: (() => void) | null = null;
+      let recvReject: ((e: Error) => void) | null = null;
+      let recvTimer: number = -1;
+      tls.on('message', (v: socket.SocketMessageInfo) => {
+        const srcLen: number = v.message.byteLength;
+        if (srcLen === 0) {
+          return;
+        }
+        const src: Uint8Array = new Uint8Array(v.message);
+        const copy: Uint8Array = new Uint8Array(srcLen);
+        copy.set(src);
+        chunks.push(copy);
+        totalRead += srcLen;
+        if (totalRead >= size && recvResolve) {
+          clearTimeout(recvTimer);
+          recvResolve();
+        }
+      });
+      tls.on('close', () => {
+        clearTimeout(recvTimer);
+        if (totalRead >= size) {
+          recvResolve?.();
+        } else {
+          recvReject?.(new Error(`Icon payload closed early: ${totalRead}/${size}`));
+        }
+      });
+      tls.on('error', () => {
+        clearTimeout(recvTimer);
+        recvReject?.(new Error('Icon payload TLS error'));
+      });
+      await new Promise<void>((resolve: () => void, reject: (e: Error) => void) => {
+        tls!.connect({
+          address: { address: peerIp, port: port, family: 1 },
+          secureOptions: secureOpts,
+          skipRemoteValidation: true
+        }, (err: Object) => {
+          if (err) {
+            reject(new Error('Icon TLS handshake failed'));
+          } else {
+            resolve();
+          }
+        });
+      });
+      await new Promise<void>((resolve: () => void, reject: (e: Error) => void) => {
+        recvResolve = resolve;
+        recvReject = reject;
+        recvTimer = setTimeout(() => {
+          reject(new Error('Icon payload timeout'));
+        }, 15000) as number;
+        if (totalRead >= size) {
+          clearTimeout(recvTimer);
+          resolve();
+        }
+      });
+      if (chunks.length === 0) {
+        return null;
+      }
+      const out: Uint8Array = new Uint8Array(totalRead);
+      let off: number = 0;
+      for (let i = 0; i < chunks.length; i++) {
+        out.set(chunks[i], off);
+        off += chunks[i].byteLength;
+      }
+      console.info(`[KDE-MVP] notification icon payload received: ${totalRead} bytes`);
+      return out;
+    } catch (e) {
+      console.warn('[KDE-MVP] fetch notification icon payload failed:', JSON.stringify(e));
+      return null;
+    } finally {
+      try {
+        tls?.close();
+      } catch (_e) {
+      }
+      try {
+        tcp?.close();
+      } catch (_e) {
+      }
+    }
   }
 
   /**
@@ -3568,18 +3815,26 @@ export class DeviceSession implements SystemMediaExporter {
 
       console.info(`[KDE-MVP] Temp file saved: ${tmpPath} (${totalRead} bytes)`);
 
-      // 6. Auto-save to Download/<bundleName>/ via DOWNLOAD mode (no user picker)
+      // 6. Save to destination. Custom dir (shareplugin_preferences) → copy
+      // there; otherwise auto-save to Download/<bundleName>/ (DOWNLOAD mode).
       let finalPath: string = tmpPath;
       try {
-        const saveOpts: picker.DocumentSaveOptions = new picker.DocumentSaveOptions();
-        saveOpts.pickerMode = picker.DocumentPickerMode.DOWNLOAD;
-        const docPicker: picker.DocumentViewPicker = new picker.DocumentViewPicker(this.context!);
-        const uris: string[] = await docPicker.save(saveOpts);
-        if (uris && uris.length > 0) {
-          const dirUri: string = uris[0];
-          // Build target path: dirUri/filename
-          const targetUri: string = new fileUri.FileUri(`${dirUri}/${safeName}`).path;
-          // Copy temp → Download/<bundleName>/
+        const customEnabled: boolean =
+          PluginPrefsStore.getInstance().getShareCustomDestination(this.getBoundDeviceId());
+        const customDir: string =
+          PluginPrefsStore.getInstance().getShareDestinationDir(this.getBoundDeviceId());
+        if (customEnabled && customDir.length > 0) {
+          // Persisted picker permission must be re-activated each process start.
+          try {
+            const policies: fileShare.PolicyInfo[] = [{
+              uri: customDir,
+              operationMode: fileShare.OperationMode.WRITE_MODE
+            }];
+            await fileShare.activatePermission(policies);
+          } catch (actErr) {
+            console.warn('[KDE-MVP] activate custom dir failed:', JSON.stringify(actErr));
+          }
+          const targetUri: string = new fileUri.FileUri(`${customDir}/${safeName}`).path;
           const src: fileIo.File = fileIo.openSync(tmpPath, fileIo.OpenMode.READ_ONLY);
           const dst: fileIo.File = fileIo.openSync(targetUri, fileIo.OpenMode.CREATE |
             fileIo.OpenMode.WRITE_ONLY | fileIo.OpenMode.TRUNC);
@@ -3594,12 +3849,39 @@ export class DeviceSession implements SystemMediaExporter {
           fileIo.closeSync(src);
           fileIo.closeSync(dst);
           finalPath = targetUri;
-          console.info(`[KDE-MVP] File saved to Download: ${targetUri}`);
-          // Clean up temp
+          console.info(`[KDE-MVP] File saved to custom dir: ${targetUri}`);
           try { fileIo.unlinkSync(tmpPath); } catch (_u) {}
+        } else {
+          const saveOpts: picker.DocumentSaveOptions = new picker.DocumentSaveOptions();
+          saveOpts.pickerMode = picker.DocumentPickerMode.DOWNLOAD;
+          const docPicker: picker.DocumentViewPicker = new picker.DocumentViewPicker(this.context!);
+          const uris: string[] = await docPicker.save(saveOpts);
+          if (uris && uris.length > 0) {
+            const dirUri: string = uris[0];
+            // Build target path: dirUri/filename
+            const targetUri: string = new fileUri.FileUri(`${dirUri}/${safeName}`).path;
+            // Copy temp → Download/<bundleName>/
+            const src: fileIo.File = fileIo.openSync(tmpPath, fileIo.OpenMode.READ_ONLY);
+            const dst: fileIo.File = fileIo.openSync(targetUri, fileIo.OpenMode.CREATE |
+              fileIo.OpenMode.WRITE_ONLY | fileIo.OpenMode.TRUNC);
+            const copyBuf: ArrayBuffer = new ArrayBuffer(8192);
+            let n: number;
+            while ((n = fileIo.readSync(src.fd, copyBuf)) > 0) {
+              const slice: ArrayBuffer = new ArrayBuffer(n);
+              const sv: Uint8Array = new Uint8Array(slice);
+              sv.set(new Uint8Array(copyBuf, 0, n));
+              fileIo.writeSync(dst.fd, slice);
+            }
+            fileIo.closeSync(src);
+            fileIo.closeSync(dst);
+            finalPath = targetUri;
+            console.info(`[KDE-MVP] File saved to Download: ${targetUri}`);
+            // Clean up temp
+            try { fileIo.unlinkSync(tmpPath); } catch (_u) {}
+          }
         }
       } catch (pickerErr) {
-        console.warn('[KDE-MVP] DOWNLOAD mode failed, file stays in temp:', JSON.stringify(pickerErr));
+        console.warn('[KDE-MVP] save destination failed, file stays in temp:', JSON.stringify(pickerErr));
       }
 
       // 7. Track completed file on the job and show progress/finish banners.
@@ -4296,7 +4578,14 @@ export class DeviceSession implements SystemMediaExporter {
     this.mprisPlayers.clear();
     this.mprisUserSelected = false;
     this.remoteMediaPlayerName = '';
+    this.remoteCertDer = null;
     this.supportAlbumArtPayload = false;
+    if (this.volumeDebounceTimer >= 0) {
+      clearTimeout(this.volumeDebounceTimer);
+      this.volumeDebounceTimer = -1;
+    }
+    this.pendingVolumePercent = -1;
+    this.volumePlayerName = '';
     this.systemVolumeSinks = [];
     this.clearVerificationState();
     this.stopBatteryReporting();
@@ -4849,6 +5138,85 @@ export class DeviceSession implements SystemMediaExporter {
       this.payloadServer = null;
     }
     this.payloadPort = 0;
+  }
+
+  /**
+   * Serve local album art as a binary payload over the dual-channel link
+   * (Android MprisReceiverPlugin.sendAlbumArt): `kdeconnect.mpris` with
+   * transferringAlbumArt=true + payload bytes on the side channel.
+   */
+  private async sendMprisAlbumArtPayload(
+    player: string,
+    albumArtUrl: string,
+    bytes: Uint8Array
+  ): Promise<void> {
+    if (!this.isTlsLive()) {
+      console.warn('[KDE-MVP] album art send skipped: not connected');
+      return;
+    }
+    if (bytes.length === 0) {
+      return;
+    }
+    await this.openPayloadTlsPort();
+    try {
+      const payloadInfo: PayloadTransferInfo = { port: this.payloadPort };
+      const body: Record<string, Object> = {
+        'player': player,
+        'transferringAlbumArt': true,
+        'albumArtUrl': albumArtUrl
+      };
+      const json: string = serializePacketWithPayload(
+        PACKET_TYPE_MPRIS,
+        body,
+        bytes.length,
+        payloadInfo
+      );
+      await new Promise<void>((resolve: (value: void) => void, reject: (reason: Error) => void) => {
+        this.sendTls(json, (err: Error | null) => {
+          if (err) {
+            reject(new Error(`Album art main-channel send failed: ${err.message}`));
+          } else {
+            resolve();
+          }
+        });
+      });
+
+      const connected: socket.TLSSocketConnection = await new Promise<socket.TLSSocketConnection>(
+        (resolve: (value: socket.TLSSocketConnection) => void, reject: (reason: Error) => void) => {
+          const timeout: number = setTimeout(() => {
+            reject(new Error('Album art payload connection timed out'));
+          }, 10000) as number;
+          this.payloadServer!.on('connect', (client: socket.TLSSocketConnection) => {
+            clearTimeout(timeout);
+            this.payloadConnection = client;
+            resolve(client);
+          });
+          this.payloadServer!.on('error', (_err: Object) => {
+            clearTimeout(timeout);
+            reject(new Error('Album art payload server error'));
+          });
+        }
+      );
+
+      const sendBuf: ArrayBuffer = bytes.buffer.slice(
+        bytes.byteOffset,
+        bytes.byteOffset + bytes.byteLength
+      );
+      await new Promise<void>((res: () => void, rej: (e: Object) => void) => {
+        connected.send(sendBuf, (err: Object) => {
+          if (err) {
+            rej(err);
+          } else {
+            res();
+          }
+        });
+      });
+      console.info(
+        `[KDE-MVP] album art payload sent: ${bytes.length} bytes player="${player}"`
+      );
+    } finally {
+      this.cleanupPayload();
+    }
   }
 
   /** Tear down this peer session only (hub owns the TCP listen socket). */

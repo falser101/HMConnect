@@ -751,7 +751,8 @@ export class AppNotifier {
     remoteId: string,
     appName: string,
     ticker: string,
-    peerDeviceName?: string
+    peerDeviceName?: string,
+    icon?: image.PixelMap | null
   ): Promise<void> {
     if (!remoteId || remoteId.length === 0) {
       return;
@@ -783,6 +784,9 @@ export class AppNotifier {
       },
       tapDismissed: true
     };
+    if (icon !== undefined && icon !== null) {
+      request.smallIcon = icon;
+    }
     if (agent) {
       request.wantAgent = agent;
     }

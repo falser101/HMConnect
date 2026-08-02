@@ -8,11 +8,13 @@ import {
   IMPLEMENTED_PLUGINS,
   PLUGIN_BATTERY,
   PLUGIN_CLIPBOARD,
+  PLUGIN_DIGITIZER,
   PLUGIN_FIND_MY_PHONE,
   PLUGIN_MPRIS,
   PLUGIN_PING,
   PLUGIN_RECEIVE_NOTIFICATIONS,
   PLUGIN_REMOTE_INPUT,
+  PLUGIN_RUNCOMMAND,
   PLUGIN_SHARE,
   PLUGIN_SYSTEMVOLUME,
   PluginMeta,
@@ -123,6 +125,12 @@ struct PluginSettings {
     if (key === PLUGIN_REMOTE_INPUT) {
       return $r('app.string.pref_plugin_remote_input');
     }
+    if (key === PLUGIN_RUNCOMMAND) {
+      return $r('app.string.pref_plugin_runcommand');
+    }
+    if (key === PLUGIN_DIGITIZER) {
+      return $r('app.string.pref_plugin_digitizer');
+    }
     return $r('app.string.menu_plugin_settings');
   }
 
@@ -153,6 +161,12 @@ struct PluginSettings {
     }
     if (key === PLUGIN_REMOTE_INPUT) {
       return $r('app.string.pref_plugin_remote_input_desc');
+    }
+    if (key === PLUGIN_RUNCOMMAND) {
+      return $r('app.string.pref_plugin_runcommand_desc');
+    }
+    if (key === PLUGIN_DIGITIZER) {
+      return $r('app.string.pref_plugin_digitizer_desc');
     }
     return $r('app.string.pref_plugin_clipboard_desc');
   }
@@ -326,43 +340,40 @@ struct PluginSettings {
   }
 
   build() {
-    Column() {
-      KdeTopBar({
-        title: $r('app.string.menu_plugin_settings'),
-        showBack: true,
-        showOverflow: true,
-        onBack: () => {
-          goBack(this.getUIContext());
-        },
-        onOverflow: () => {
-          this.openStats();
-        }
-      })
+    Stack() {
+      Column() {
+        KdeTopBar({
+          title: $r('app.string.menu_plugin_settings'),
+          showBack: true,
+          showOverflow: true,
+          onBack: () => {
+            goBack(this.getUIContext());
+          },
+          onOverflow: () => {
+            this.openStats();
+          }
+        })
 
-      if (this.deviceName.length > 0) {
-        Text(this.deviceName)
-          .fontSize(13)
-          .fontColor(UiTheme.onSurfaceVariant)
+        Scroll() {
+          Column() {
+            ForEach(this.rows, (row: PluginRow) => {
+              this.PluginRowItem(row)
+            }, (row: PluginRow) => `${row.key}_${row.enabled ? '1' : '0'}`)
+
+            Column().width('100%').height(this.navBarHeight + 16)
+          }
           .width('100%')
-          .padding({ left: 16, right: 16, top: 8, bottom: 4 })
-      }
-
-      Scroll() {
-        Column() {
-          ForEach(this.rows, (row: PluginRow) => {
-            this.PluginRowItem(row)
-          }, (row: PluginRow) => `${row.key}_${row.enabled ? '1' : '0'}`)
-
-          Column().width('100%').height(this.navBarHeight + 16)
+          .padding({ top: 8, bottom: 16 })
         }
-        .width('100%')
-        .padding({ top: 8, bottom: 16 })
+        .layoutWeight(1)
+        .scrollBar(BarState.Off)
+        .edgeEffect(EdgeEffect.Spring)
       }
-      .layoutWeight(1)
-      .scrollBar(BarState.Off)
-      .edgeEffect(EdgeEffect.Spring)
+      .width('100%')
+      .height('100%')
+      .backgroundColor(UiTheme.pageBg)
 
-      // ── Plugin stats dialog (Android DeviceStats) ──
+      // ── Plugin stats dialog (Android DeviceStats) — full-screen overlay ──
       if (this.showStats) {
         Stack({ alignContent: Alignment.Center }) {
           Column()
@@ -378,10 +389,16 @@ struct PluginSettings {
               .fontWeight(FontWeight.Medium)
               .fontColor(UiTheme.onSurface)
               .width('100%')
-            Text(this.statsText)
-              .fontSize(13)
-              .fontColor(UiTheme.onSurface)
-              .width('100%')
+            Scroll() {
+              Text(this.statsText)
+                .fontSize(13)
+                .fontColor(UiTheme.onSurface)
+                .width('100%')
+            }
+            .width('100%')
+            .height(220)
+            .scrollBar(BarState.Auto)
+            .edgeEffect(EdgeEffect.Spring)
             Button($r('app.string.ok'))
               .width('100%')
               .height(44)
@@ -403,7 +420,6 @@ struct PluginSettings {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor(UiTheme.pageBg)
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
   }
 }

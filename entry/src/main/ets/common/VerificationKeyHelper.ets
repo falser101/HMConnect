@@ -154,6 +154,94 @@ export class VerificationKeyHelper {
     }
   }
 
+  /**
+   * Android SslHelper.getCertificateHash: SHA-256 over the DER-encoded X.509
+   * certificate, formatted as lowercase colon-separated hex per byte.
+   */
+  public static async fingerprintFromPem(pem: string): Promise<string> {
+    const der = VerificationKeyHelper.derFromPem(pem);
+    if (der === null) {
+      return '';
+    }
+    return VerificationKeyHelper.sha256Colon(der);
+  }
+
+  /** Fingerprint from a raw DER certificate (from a remote TLS blob). */
+  public static async fingerprintFromDer(der: Uint8Array): Promise<string> {
+    if (!der || der.byteLength === 0) {
+      return '';
+    }
+    return VerificationKeyHelper.sha256Colon(der);
+  }
+
+  /** Decode a TLS remote-certificate blob to DER bytes (accepts PEM or DER). */
+  public static derFromBlob(raw: cert.EncodingBlob): Uint8Array | null {
+    if (!raw || !raw.data || raw.data.byteLength === 0) {
+      return null;
+    }
+    if (raw.encodingFormat === cert.EncodingFormat.FORMAT_PEM) {
+      return VerificationKeyHelper.derFromPemBytes(raw.data);
+    }
+    return raw.data;
+  }
+
+  /** PEM certificate string → DER bytes (strip headers, base64-decode). */
+  public static derFromPem(pem: string): Uint8Array | null {
+    if (!pem || pem.length === 0) {
+      return null;
+    }
+    try {
+      const encoder = util.TextEncoder.create();
+      return VerificationKeyHelper.derFromPemBytes(encoder.encodeInto(pem));
+    } catch (e) {
+      console.warn('[VerifyKey] derFromPem failed:', JSON.stringify(e));
+      return null;
+    }
+  }
+
+  private static derFromPemBytes(pem: Uint8Array): Uint8Array | null {
+    try {
+      const decoder = util.TextDecoder.create('utf-8');
+      const text: string = decoder.decodeToString(pem);
+      const b64: string = text
+        .replace(/-----BEGIN [^-]+-----/g, '')
+        .replace(/-----END [^-]+-----/g, '')
+        .replace(/\s/g, '');
+      if (b64.length === 0) {
+        return null;
+      }
+      const encoder = util.TextEncoder.create();
+      const b64Bytes: Uint8Array = encoder.encodeInto(b64);
+      const b64Helper = new util.Base64Helper();
+      return b64Helper.decodeSync(b64Bytes);
+    } catch (e) {
+      console.warn('[VerifyKey] derFromPemBytes failed:', JSON.stringify(e));
+      return null;
+    }
+  }
+
+  private static async sha256Colon(data: Uint8Array): Promise<string> {
+    try {
+      const md: cryptoFramework.Md = cryptoFramework.createMd('SHA256');
+      const blob: cryptoFramework.DataBlob = { data: data };
+      await md.update(blob);
+      const digest: cryptoFramework.DataBlob = await md.digest();
+      return VerificationKeyHelper.bytesToColonHex(digest.data);
+    } catch (e) {
+      console.warn('[VerifyKey] sha256Colon failed:', JSON.stringify(e));
+      return '';
+    }
+  }
+
+  private static bytesToColonHex(data: Uint8Array): string {
+    let s = '';
+    for (let i = 0; i < data.byteLength; i++) {
+      const h = (data[i] & 0xff).toString(16);
+      s += (h.length === 1 ? `0${h}` : h) + ':';
+    }
+    return s;
+  }
+
   private static bytesToHex(data: Uint8Array): string {
     let s = '';
     for (let i = 0; i < data.byteLength; i++) {

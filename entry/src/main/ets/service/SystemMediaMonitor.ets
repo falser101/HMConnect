@@ -6,6 +6,8 @@
  */
 import { avSession } from '@kit.AVSessionKit';
 import { BusinessError } from '@kit.BasicServicesKit';
+import { audio } from '@kit.AudioKit';
+import { image } from '@kit.ImageKit';
 
 /** Snapshot for kdeconnect.mpris (field names match Android MprisPlugin). */
 export interface LocalMediaSnapshot {
@@ -132,6 +134,8 @@ class SessionControllerEntry {
   artist: string = '';
   album: string = '';
   albumArtUrl: string = '';
+  /** Raw album art bitmap from AVMetadata.mediaImage (PixelMap branch). */
+  mediaPixelMap: image.PixelMap | null = null;
   length: number = -1;
   isPlaying: boolean = false;
   pos: number = 0;
@@ -326,10 +330,19 @@ class SessionControllerEntry {
       this.length = -1;
     }
     const img = metadata.mediaImage;
-    if (typeof img === 'string' && img.length > 0) {
-      this.albumArtUrl = img;
+    if (typeof img === 'string') {
+      if (img.length > 0) {
+        this.albumArtUrl = img;
+      } else {
+        this.albumArtUrl = '';
+      }
+      this.mediaPixelMap = null;
     } else if (img !== undefined && img !== null) {
-      this.albumArtUrl = '';
+      // PixelMap branch — export via payload transfer (Android transferringAlbumArt).
+      this.mediaPixelMap = img;
+      if (this.albumArtUrl.length === 0) {
+        this.albumArtUrl = `kdeconnect://albumArt/${this.sessionId}`;
+      }
     }
   }
 
@@ -463,6 +476,42 @@ class SessionControllerEntry {
       volume: this.volume,
       nowPlaying: nowPlaying
     };
+  }
+
+  /** JPEG-encode the cached album art bitmap, or null when unavailable. */
+  async encodeAlbumArt(): Promise<Uint8Array | null> {
+    if (this.mediaPixelMap === null) {
+      return null;
+    }
+    let packer: image.ImagePacker | null = null;
+    try {
+      packer = image.createImagePacker();
+      const option: image.PackingOption = {
+        format: 'image/jpeg',
+        quality: 90
+      };
+      const buf: ArrayBuffer = await packer.packing(this.mediaPixelMap, option);
+      if (buf.byteLength <= 0) {
+        return null;
+      }
+      const out: Uint8Array = new Uint8Array(buf.byteLength);
+      out.set(new Uint8Array(buf));
+      console.info(
+        `[SysMedia] encoded album art ${out.length} bytes player="${this.playerName}"`
+      );
+      return out;
+    } catch (e) {
+      console.warn(`[SysMedia] album art encode failed: ${errText(e)}`);
+      return null;
+    } finally {
+      if (packer !== null) {
+        try {
+          await packer.release();
+        } catch (_e) {
+          // ignore
+        }
+      }
+    }
   }
 
   private resolveCommand(action: string): avSession.AVControlCommandType | null {
@@ -770,6 +819,33 @@ export class SystemMediaMonitor {
       return null;
     }
     return entry.toSnapshot();
+  }
+
+  /**
+   * Android MprisReceiver: serve album art as a binary payload when the peer
+   * asks (kdeconnect.mpris.request {player, albumArtUrl}). Encodes the local
+   * PixelMap to JPEG bytes, or null when there is no bitmap for the player.
+   */
+  public async encodeAlbumArt(playerName: string): Promise<Uint8Array | null> {
+    const entry = this.resolveEntry(playerName);
+    if (entry === null) {
+      return null;
+    }
+    return entry.encodeAlbumArt();
+  }
+
+  /**
+   * Best-effort local media volume control (Android MprisReceiverPlayer.setVolume).
+   * HarmonyOS restricts direct system-volume writes for third-party apps, so this
+   * may fail — callers must fall back to re-pushing the current metadata.
+   */
+  public async setLocalVolume(volumePercent: number): Promise<void> {
+    const clamped: number = Math.max(0, Math.min(100, volumePercent));
+    const audioManager = audio.getAudioManager();
+    const maxVolume: number = await audioManager.getMaxVolume(audio.AudioVolumeType.MEDIA);
+    const level: number = maxVolume > 0 ? Math.round((clamped * maxVolume) / 100) : 0;
+    console.info(`[SysMedia] setLocalVolume ${clamped}% → level ${level}/${maxVolume}`);
+    await audioManager.setVolume(audio.AudioVolumeType.MEDIA, level);
   }
 
   public getPreferredPlayerName(): string {

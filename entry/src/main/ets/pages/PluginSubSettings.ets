@@ -396,20 +396,37 @@ struct PluginSubSettings {
       return;
     }
     try {
-      const saveOpts: picker.DocumentSaveOptions = new picker.DocumentSaveOptions();
-      saveOpts.pickerMode = picker.DocumentPickerMode.DOWNLOAD;
+      // Android ListPreference-style folder picker. FOLDER selection needs the
+      // FolderSelection system capability (Phone: API 26+). Fall back to a
+      // DOWNLOAD save otherwise so the row still works.
+      const selectOpts: picker.DocumentSelectOptions = new picker.DocumentSelectOptions();
+      selectOpts.selectMode = picker.DocumentSelectMode.FOLDER;
       const docPicker: picker.DocumentViewPicker = new picker.DocumentViewPicker(ctx);
-      docPicker.save(saveOpts).then((uris: string[]) => {
+      docPicker.select(selectOpts).then((uris: string[]) => {
         if (uris && uris.length > 0) {
-          PluginPrefsStore.getInstance().setShareDestinationDir(this.deviceId, uris[0]);
-          this.buildRows();
+          const dirUri: string = uris[0];
+          const store = PluginPrefsStore.getInstance();
+          store.persistAndActivateDir(dirUri).then((ok: boolean) => {
+            if (ok) {
+              store.setShareDestinationDir(this.deviceId, dirUri);
+              this.buildRows();
+            } else {
+              this.showToast($r('app.string.subsettings_folder_persist_failed'));
+            }
+          });
         }
       }).catch((e: Error) => {
-        console.warn('[PluginPrefs] folder pick failed:', e.message);
+        console.warn('[PluginPrefs] folder select failed:', e.message);
+        this.showToast($r('app.string.subsettings_folder_unavailable'));
       });
     } catch (e) {
       console.warn('[PluginPrefs] folder pick exception:', JSON.stringify(e));
+      this.showToast($r('app.string.subsettings_folder_unavailable'));
     }
+  }
+
+  private showToast(msg: ResourceStr): void {
+    this.getUIContext().getPromptAction().showToast({ message: msg, duration: 1500 });
   }
 
   private onRowTap(row: SubPrefRow): void {

@@ -1,7 +1,9 @@
 import { preferences } from '@kit.ArkData';
 import { common } from '@kit.AbilityKit';
+import { fileShare } from '@kit.CoreFileKit';
 
 const PREF_NAME = 'hmconnect_plugin_prefs';
+const SHARE_DIR_KEY_SUFFIX: string = '_share_destination_folder';
 
 /**
  * Per-device plugin sub-settings (Android PluginSettingsFragment preference
@@ -133,6 +135,65 @@ export class PluginPrefsStore {
 
   public setShareDestinationDir(deviceId: string, value: string): void {
     this.put(deviceId, 'share', 'share_destination_folder', value);
+  }
+
+  /** All stored share destination dir URIs (across devices). */
+  public getAllShareDestinationDirs(): string[] {
+    const out: string[] = [];
+    if (!this.pref) {
+      return out;
+    }
+    try {
+      const all = this.pref.getAllSync() as Record<string, preferences.ValueType>;
+      const entries: [string, preferences.ValueType][] = Object.entries(all);
+      for (let i = 0; i < entries.length; i++) {
+        const key: string = entries[i][0];
+        const value: preferences.ValueType = entries[i][1];
+        if (key.endsWith(SHARE_DIR_KEY_SUFFIX) && typeof value === 'string' && value.length > 0) {
+          out.push(value);
+        }
+      }
+    } catch (e) {
+      console.error('[PluginPrefs] getAllShareDirs failed:', JSON.stringify(e));
+    }
+    return out;
+  }
+
+  /**
+   * Persisted picker permissions must be re-activated after each app start
+   * (Android-like long-term access). Best-effort; ignores failures.
+   */
+  public async activateAllShareDestinationDirs(): Promise<void> {
+    const dirs: string[] = this.getAllShareDestinationDirs();
+    for (let i = 0; i < dirs.length; i++) {
+      try {
+        const policies: fileShare.PolicyInfo[] = [{
+          uri: dirs[i],
+          operationMode: fileShare.OperationMode.WRITE_MODE
+        }];
+        await fileShare.activatePermission(policies);
+        console.info(`[PluginPrefs] activated share dir ${dirs[i]}`);
+      } catch (e) {
+        console.warn('[PluginPrefs] activate dir failed:', JSON.stringify(e));
+      }
+    }
+  }
+
+  /** Persist the WRITE grant for a picked folder and activate it immediately. */
+  public async persistAndActivateDir(uri: string): Promise<boolean> {
+    try {
+      const policies: fileShare.PolicyInfo[] = [{
+        uri: uri,
+        operationMode: fileShare.OperationMode.WRITE_MODE
+      }];
+      await fileShare.persistPermission(policies);
+      await fileShare.activatePermission(policies);
+      console.info(`[PluginPrefs] persisted+activated share dir ${uri}`);
+      return true;
+    } catch (e) {
+      console.warn('[PluginPrefs] persist/activate dir failed:', JSON.stringify(e));
+      return false;
+    }
   }
 
   // ── findmyphone (findmyphoneplugin_preferences.xml) ──────

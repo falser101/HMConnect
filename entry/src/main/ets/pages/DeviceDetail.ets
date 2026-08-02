@@ -24,11 +24,13 @@ import {
   PLUGIN_REMOTE_INPUT,
   PLUGIN_RUNCOMMAND,
   PLUGIN_SHARE,
+  PLUGIN_PERMISSION_DEFS,
   isUiButtonForPeer,
   peerSupportsRingMenu,
   pluginKeyForUiButton
 } from '../service/PluginRegistry';
 import { PluginSettingsStore } from '../store/PluginSettingsStore';
+import { isPermissionGranted, requestPermission, PERMISSION_CAMERA } from '../common/AppPermission';
 
 interface DeviceDetailParams {
   deviceId: string;
@@ -43,6 +45,13 @@ interface PluginButton {
   disabled: boolean;
   onTap?: () => void;
   pluginKey?: string;
+}
+
+/** Enabled plugin missing a runtime permission (Android PluginsWithoutPermissions row). */
+interface PermissionPluginRow {
+  pluginKey: string;
+  label: ResourceStr;
+  explanation: ResourceStr;
 }
 
 /** Params for PluginSettings page */
@@ -69,6 +78,8 @@ struct DeviceDetail {
   @State menuOpacity: number = 0;
   // Dialogs
   @State showEncryptionDialog: boolean = false;
+  @State myFingerprint: string = '';
+  @State remoteFingerprint: string = '';
   @State showPasteOverlay: boolean = false;
   // File send
   @State fileSending: boolean = false;
@@ -79,6 +90,13 @@ struct DeviceDetail {
   /** Bumps when plugin enable state changes so the grid refreshes. */
   @State pluginRev: number = 0;
   @State visiblePluginBtns: PluginButton[] = [];
+  /** Enabled plugins missing a runtime permission (Android pluginsNeedPermissions). */
+  @State needsPermissionPlugins: PermissionPluginRow[] = [];
+  // Permission explanation dialog (Android PermissionsAlertDialogFragment)
+  @State showPermissionDialog: boolean = false;
+  @State permissionDialogTitle: ResourceStr = '';
+  @State permissionDialogMessage: ResourceStr = '';
+  private grantingPermission: boolean = false;
   /** Live pairing state (Android PairingHandler.PairState). */
   @State pairState: PairUiState = 'not_paired';
   private autoConnectTried: boolean = false;
@@ -223,6 +241,66 @@ struct DeviceDetail {
     this.pluginRev = this.pluginRev + 1;
   }
 
+  private pluginDisplayNameForKey(key: string): ResourceStr {
+    if (key === PLUGIN_FIND_MY_PHONE) {
+      return $r('app.string.pref_plugin_findmyphone');
+    }
+    return $r('app.string.menu_plugin_settings');
+  }
+
+  private permissionExplanationForKey(key: string): ResourceStr {
+    if (key === PLUGIN_FIND_MY_PHONE) {
+      return $r('app.string.permission_camera_reason');
+    }
+    return $r('app.string.permission_camera_reason');
+  }
+
+  /**
+   * Android DeviceFragment: pluginsNeedPermissions =
+   * device.pluginsWithoutPermissions.filter { isPluginEnabled }.
+   * Here: enabled plugins whose user-grant permission is not granted.
+   */
+  private refreshPermissionPlugins(): void {
+    const store = PluginSettingsStore.getInstance();
+    const ctx = hostContext(this.getUIContext());
+    const rows: PermissionPluginRow[] = [];
+    for (let i = 0; i < PLUGIN_PERMISSION_DEFS.length; i++) {
+      const def = PLUGIN_PERMISSION_DEFS[i];
+      if (!store.isEnabled(this.deviceId, def.pluginKey)) {
+        continue;
+      }
+      if (isPermissionGranted(ctx, def.permission)) {
+        continue;
+      }
+      rows.push({
+        pluginKey: def.pluginKey,
+        label: this.pluginDisplayNameForKey(def.pluginKey),
+        explanation: this.permissionExplanationForKey(def.pluginKey)
+      });
+    }
+    this.needsPermissionPlugins = rows;
+  }
+
+  /** Android PermissionsAlertDialogFragment positive button → request permission. */
+  private onGrantPermission(): void {
+    if (this.grantingPermission) {
+      return;
+    }
+    const ctx = hostContext(this.getUIContext());
+    if (!ctx) {
+      this.showPermissionDialog = false;
+      return;
+    }
+    this.grantingPermission = true;
+    requestPermission(ctx, PERMISSION_CAMERA).then((granted: boolean) => {
+      this.grantingPermission = false;
+      this.showPermissionDialog = false;
+      if (granted) {
+        this.refreshPermissionPlugins();
+      }
+    });
+  }
+
   /** Android pairVerification — 8-char code during pairing. */
   private verificationKeyText(): string {
     if (!this.item || !this.item.verificationKey) {
@@ -256,6 +334,7 @@ struct DeviceDetail {
     this.refreshPairState();
     // deviceType / trust may arrive after first paint — re-filter plugin grid
     this.refreshPluginButtons();
+    this.refreshPermissionPlugins();
   }
 
   private refreshPairState(): void {
@@ -544,7 +623,19 @@ struct DeviceDetail {
 
   private onEncryptionInfo(): void {
     this.closeMenu();
+    this.myFingerprint = '';
+    this.remoteFingerprint = '';
     this.showEncryptionDialog = true;
+    // Android: SslHelper.getCertificateHash for both certs.
+    const session = this.session.getService().getClientForDevice(this.deviceId);
+    if (session) {
+      session.myCertificateFingerprint().then((fp: string) => {
+        this.myFingerprint = fp;
+      });
+      session.remoteCertificateFingerprint().then((fp: string) => {
+        this.remoteFingerprint = fp;
+      });
+    }
   }
 
   private trySendClipboard(): void {
@@ -1045,6 +1136,24 @@ struct DeviceDetail {
     .padding({ left: 16, right: 16, top: 8 })
   }
 
+  /** Android PluginsWithoutPermissions: tappable plugin row (indent 28.dp). */
+  @Builder
+  PermissionPluginRowItem(row: PermissionPluginRow) {
+    Row() {
+      Text(row.label)
+        .fontSize(14)
+        .fontColor(UiTheme.onSurface)
+        .layoutWeight(1)
+    }
+    .width('100%')
+    .padding({ left: 28, right: 16, top: 12, bottom: 12 })
+    .onClick(() => {
+      this.permissionDialogTitle = row.label;
+      this.permissionDialogMessage = row.explanation;
+      this.showPermissionDialog = true;
+    })
+  }
+
   @Builder
   PluginsPanel() {
     Column() {
@@ -1055,31 +1164,22 @@ struct DeviceDetail {
           .fontColor(this.hasError() ? UiTheme.danger : UiTheme.primary)
           .width('100%')
           .padding({ left: 16, right: 16, top: 8, bottom: 4 })
-      }
-
-      if (this.item !== null && this.item.sessionActive) {
+      }      if (this.item !== null && this.item.sessionActive) {
         // ── Plugin buttons grid ──
         this.PluginGrid()
 
-        // ── Plugins needing permissions (Android section) ──
-        Text($r('app.string.plugins_permission_needed'))
-          .fontSize(12)
-          .fontColor(UiTheme.textMuted)
-          .width('100%')
-          .padding({ left: 16, right: 16, top: 16, bottom: 4 })
-          .opacity(0.4)
+        // ── Plugins needing permissions (Android PluginsWithoutPermissions) ──
+        if (this.needsPermissionPlugins.length > 0) {
+          Text($r('app.string.plugins_permission_needed'))
+            .fontSize(12)
+            .fontColor(UiTheme.textMuted)
+            .width('100%')
+            .padding({ left: 16, right: 16, top: 16, bottom: 4 })
 
-        Column()
-          .width('100%')
-          .height(8)
-
-        Text($r('app.string.plugins_permission_disabled'))
-          .fontSize(12)
-          .fontColor(UiTheme.textMuted)
-          .width('100%')
-          .padding({ left: 16, right: 16, top: 4, bottom: 4 })
-          .opacity(0.4)
-
+          ForEach(this.needsPermissionPlugins, (row: PermissionPluginRow) => {
+            this.PermissionPluginRowItem(row)
+          }, (row: PermissionPluginRow) => `pp_${row.pluginKey}`)
+        }
       } else if (this.item !== null && this.item.online) {
         // ── Online but not session-active ──
         Row({ space: 8 }) {
@@ -1130,9 +1230,9 @@ struct DeviceDetail {
         .fontColor(UiTheme.textMuted)
         .width('100%')
         .margin({ bottom: 4 })
-      Text($r('app.string.encryption_cert_unavailable'))
+      Text(this.myFingerprint.length > 0 ? this.myFingerprint : $r('app.string.encryption_cert_unavailable'))
         .fontSize(12)
-        .fontColor(UiTheme.outline)
+        .fontColor(this.myFingerprint.length > 0 ? UiTheme.onSurface : UiTheme.outline)
         .width('100%')
         .margin({ bottom: 12 })
 
@@ -1144,9 +1244,9 @@ struct DeviceDetail {
         .fontColor(UiTheme.textMuted)
         .width('100%')
         .margin({ bottom: 4 })
-      Text($r('app.string.encryption_not_connected'))
+      Text(this.remoteFingerprint.length > 0 ? this.remoteFingerprint : $r('app.string.encryption_not_connected'))
         .fontSize(12)
-        .fontColor(UiTheme.outline)
+        .fontColor(this.remoteFingerprint.length > 0 ? UiTheme.onSurface : UiTheme.outline)
         .width('100%')
         .margin({ bottom: 12 })
 
@@ -1180,6 +1280,59 @@ struct DeviceDetail {
     .borderRadius(UiTheme.radiusCard)
     .shadow({ radius: 16, color: '#40000000', offsetX: 0, offsetY: 8 })
     .alignItems(HorizontalAlign.Start)
+  }
+
+  // ── Permission explanation dialog (Android PermissionsAlertDialogFragment) ──
+
+  @Builder
+  PermissionDialog() {
+    Column()
+      .width('100%')
+      .height('100%')
+      .backgroundColor('#33000000')
+      .onClick(() => {
+        this.showPermissionDialog = false;
+      })
+
+    Column({ space: 12 }) {
+      Text(this.permissionDialogTitle)
+        .fontSize(18)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(UiTheme.onSurface)
+        .width('100%')
+
+      Text(this.permissionDialogMessage)
+        .fontSize(14)
+        .fontColor(UiTheme.textMuted)
+        .width('100%')
+
+      Row({ space: 12 }) {
+        Button($r('app.string.settings_cancel'))
+          .layoutWeight(1)
+          .height(44)
+          .fontColor(UiTheme.onSurface)
+          .backgroundColor(UiTheme.surfaceVariant)
+          .borderRadius(UiTheme.radiusButton)
+          .onClick(() => {
+            this.showPermissionDialog = false;
+          })
+        Button($r('app.string.ok'))
+          .layoutWeight(1)
+          .height(44)
+          .fontColor(UiTheme.onPrimary)
+          .backgroundColor(UiTheme.primary)
+          .borderRadius(UiTheme.radiusButton)
+          .onClick(() => {
+            this.onGrantPermission();
+          })
+      }
+      .width('100%')
+      .margin({ top: 8 })
+    }
+    .width('86%')
+    .padding(24)
+    .backgroundColor(UiTheme.cardBg)
+    .borderRadius(28)
   }
 
   // ── Paste overlay (system PasteButton for clipboard access) ──
@@ -1314,6 +1467,10 @@ struct DeviceDetail {
 
       if (this.showEncryptionDialog) {
         this.EncryptionDialog()
+      }
+
+      if (this.showPermissionDialog) {
+        this.PermissionDialog()
       }
 
       if (this.showPasteOverlay) {

@@ -45,6 +45,14 @@
       "value": "用于“查找设备”响铃时打开闪光灯"
     },
     {
+      "name": "permission_file_persist_reason",
+      "value": "用于长期访问你选择的自定义文件保存目录"
+    },
+    {
+      "name": "permission_notification_policy_reason",
+      "value": "用于支持对端设备远程调节本机媒体音量"
+    },
+    {
       "name": "permission_wifi_reason",
       "value": "用于获取当前 Wi-Fi 网络以支持可信网络自动配对"
     },
@@ -281,6 +289,22 @@
       "value": "将手机用作电脑的触控板和键盘"
     },
     {
+      "name": "pref_plugin_runcommand",
+      "value": "运行命令"
+    },
+    {
+      "name": "pref_plugin_runcommand_desc",
+      "value": "在电脑上执行预设命令并查看输出"
+    },
+    {
+      "name": "pref_plugin_digitizer",
+      "value": "绘图板"
+    },
+    {
+      "name": "pref_plugin_digitizer_desc",
+      "value": "把手机用作电脑的绘图板"
+    },
+    {
       "name": "mousepad_info",
       "value": "滑动手指移动鼠标指针。点击进行单击，两指/三指点击对应右键与中键，双指滑动滚动，长按拖拽"
     },
@@ -419,6 +443,14 @@
     {
       "name": "subsettings_not_set",
       "value": "未设置"
+    },
+    {
+      "name": "subsettings_folder_unavailable",
+      "value": "当前设备不支持选择文件夹"
+    },
+    {
+      "name": "subsettings_folder_persist_failed",
+      "value": "无法持久化访问该目录，请重试"
     },
     {
       "name": "digitizer_pref_hide_draw_button_title",

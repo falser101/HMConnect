@@ -264,6 +264,8 @@ export interface KdeNotificationBody {
   silent?: boolean;
   isCancel?: boolean;
   isClearable?: boolean;
+  /** MD5 of the app-icon payload (Android NotificationPlugin payloadHash). */
+  payloadHash?: string;
   /** Present on request packets when embedded in notification.request. */
   request?: boolean;
   cancel?: string;

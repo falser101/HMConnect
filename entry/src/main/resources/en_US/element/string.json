@@ -233,6 +233,22 @@
       "value": "Use your phone as a touchpad and keyboard for the computer"
     },
     {
+      "name": "pref_plugin_runcommand",
+      "value": "Run command"
+    },
+    {
+      "name": "pref_plugin_runcommand_desc",
+      "value": "Run preset commands on the computer and view their output"
+    },
+    {
+      "name": "pref_plugin_digitizer",
+      "value": "Drawing tablet"
+    },
+    {
+      "name": "pref_plugin_digitizer_desc",
+      "value": "Use this device as a drawing tablet for the computer"
+    },
+    {
       "name": "mousepad_info",
       "value": "Move a finger on the screen to move the mouse cursor. Tap to click; two/three fingers for right and middle buttons. Two fingers to scroll. Long press to drag & drop"
     },
@@ -371,6 +387,14 @@
     {
       "name": "subsettings_not_set",
       "value": "Not set"
+    },
+    {
+      "name": "subsettings_folder_unavailable",
+      "value": "Folder selection is not supported on this device"
+    },
+    {
+      "name": "subsettings_folder_persist_failed",
+      "value": "Could not persist access to this folder, try again"
     },
     {
       "name": "digitizer_pref_hide_draw_button_title",
