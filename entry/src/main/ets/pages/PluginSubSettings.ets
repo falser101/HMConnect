@@ -358,6 +358,9 @@ struct PluginSubSettings {
     } else if (this.pluginKey === PLUGIN_MPRIS) {
       if (row.rowKey === 'mpris_notification') {
         store.setMprisNotification(this.deviceId, value);
+        // Apply immediately: hide/show the lock-screen / status-bar media card.
+        AppSession.getInstance().getService().getClientForDevice(this.deviceId)
+          ?.refreshRemoteMediaSession();
       } else if (row.rowKey === 'mpris_keepwatching') {
         store.setMprisKeepWatching(this.deviceId, value);
       }

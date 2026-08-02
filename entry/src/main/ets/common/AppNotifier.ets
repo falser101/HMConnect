@@ -160,6 +160,63 @@ export class AppNotifier {
   }
 
   /**
+   * Android MprisPlugin "Continue playing" notification: a remote video player
+   * was closed while playing — tap reopens the media URL on the desktop.
+   */
+  public async notifyKeepWatching(title: string, url: string): Promise<void> {
+    let ok = await this.ensureEnabled();
+    if (!ok) {
+      console.warn('[Notify] notifications disabled; skip keepwatching');
+      return;
+    }
+    const id: number = this.nextId++;
+    if (this.nextId > 9000) {
+      this.nextId = 2000;
+    }
+    let agent: WantAgent | undefined;
+    try {
+      const info: wantAgent.WantAgentInfo = {
+        wants: [
+          {
+            deviceId: '',
+            action: 'ohos.want.action.viewData',
+            uri: url,
+            type: 'text/html'
+          }
+        ],
+        actionType: wantAgent.OperationType.START_ABILITY,
+        requestCode: id,
+        actionFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
+      };
+      agent = await wantAgent.getWantAgent(info);
+    } catch (e) {
+      let err = e as BusinessError;
+      console.warn(`[Notify] keepwatching wantAgent failed: code=${err.code} ${err.message}`);
+    }
+    const request: notificationManager.NotificationRequest = {
+      id: id,
+      notificationSlotType: notificationManager.SlotType.SOCIAL_COMMUNICATION,
+      content: {
+        notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
+        normal: {
+          title: '继续播放',
+          text: title
+        }
+      }
+    };
+    if (agent) {
+      request.wantAgent = agent;
+    }
+    try {
+      await notificationManager.publish(request);
+      console.info(`[Notify] keepwatching published: ${title}`);
+    } catch (e) {
+      let err = e as BusinessError;
+      console.error(`[Notify] keepwatching publish failed: code=${err.code} ${err.message}`);
+    }
+  }
+
+  /**
    * Sticky find-my-phone banner with explicit「关闭响铃」action.
    * Body tap opens the control page; button stops ringing.
    * Uses a loud slot + optional notification sound as background fallback.

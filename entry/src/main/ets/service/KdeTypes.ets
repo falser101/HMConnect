@@ -438,6 +438,10 @@ export interface MprisPlayerState {
   albumArtUrl: string;
   /** Local file path after payload transfer (optional). */
   albumArtLocalPath: string;
+  /** Player media URL (Android MprisPlayer.url) — used for continue-watching. */
+  url: string;
+  /** Epoch ms when playback last started (Android MprisPlayer.playStartTime). */
+  playStartTime: number;
 }
 
 /** Default Seek offset: 10s in microseconds (Android mpris_time_default). */

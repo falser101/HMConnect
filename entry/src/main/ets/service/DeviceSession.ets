@@ -854,7 +854,9 @@ export class DeviceSession implements SystemMediaExporter {
       shuffle: false,
       shuffleAllowed: false,
       albumArtUrl: '',
-      albumArtLocalPath: ''
+      albumArtLocalPath: '',
+      url: '',
+      playStartTime: 0
     };
   }
 
@@ -879,7 +881,9 @@ export class DeviceSession implements SystemMediaExporter {
       shuffle: p.shuffle,
       shuffleAllowed: p.shuffleAllowed,
       albumArtUrl: p.albumArtUrl,
-      albumArtLocalPath: p.albumArtLocalPath
+      albumArtLocalPath: p.albumArtLocalPath,
+      url: p.url,
+      playStartTime: p.playStartTime
     };
   }
 
@@ -911,6 +915,13 @@ export class DeviceSession implements SystemMediaExporter {
       media.clearIfTarget(this);
       return;
     }
+    // Android MprisMediaSession: media-control notification gated by
+    // mpris_notification_enabled (lock screen / status bar card).
+    if (!PluginPrefsStore.getInstance().getMprisNotification(this.getBoundDeviceId())) {
+      this.remoteMediaPlayerName = '';
+      media.clearIfTarget(this);
+      return;
+    }
     // Prefer a currently playing player (Android findPlayer); else keep last media player / UI selection
     let preferred: MprisPlayerState | null = null;
     this.mprisPlayers.forEach((p: MprisPlayerState) => {
@@ -927,6 +938,11 @@ export class DeviceSession implements SystemMediaExporter {
     this.remoteMediaPlayerName = preferred ? preferred.player : '';
     const peerName = this.peerDevice?.deviceName ?? '';
     media.updateFromRemote(this, peerName, preferred);
+  }
+
+  /** Apply mpris_notification_enabled toggle immediately (lock screen / card). */
+  public refreshRemoteMediaSession(): void {
+    this.syncRemoteMediaSession();
   }
 
   /** UI controls: selected player. System card uses remoteMediaPlayer(). */
@@ -1036,6 +1052,11 @@ export class DeviceSession implements SystemMediaExporter {
         }
       });
       for (let r = 0; r < toRemove.length; r++) {
+        const removed: MprisPlayerState | undefined = this.mprisPlayers.get(toRemove[r]);
+        if (removed && removed.isPlaying) {
+          // Android MprisPlugin: player removed while playing → continue-watching.
+          this.maybeShowKeepWatching(removed, toRemove[r]);
+        }
         this.mprisPlayers.delete(toRemove[r]);
       }
       for (let i = 0; i < names.length; i++) {
@@ -1074,6 +1095,13 @@ export class DeviceSession implements SystemMediaExporter {
     const length: number = typeof b['length'] === 'number' ? b['length'] as number : prev.length;
     let pos: number = typeof b['pos'] === 'number' ? b['pos'] as number : prev.pos;
     const lastPositionTime: number = typeof b['pos'] === 'number' ? now : prev.lastPositionTime;
+    // Android MprisPlayer.url — media URL for continue-watching notification.
+    const url: string = typeof b['url'] === 'string' ? b['url'] as string : prev.url;
+    // Android MprisPlayer.isPlaying setter: record when playback started.
+    let playStartTime: number = prev.playStartTime;
+    if (isPlaying && !prev.isPlaying) {
+      playStartTime = now;
+    }
 
     let loopStatus: string = prev.loopStatus;
     let loopStatusAllowed: boolean = prev.loopStatusAllowed;
@@ -1112,7 +1140,7 @@ export class DeviceSession implements SystemMediaExporter {
       canPlay, canPause, canGoNext, canGoPrevious, canSeek,
       volume, length, pos, lastPositionTime,
       loopStatus, loopStatusAllowed, shuffle, shuffleAllowed,
-      albumArtUrl, albumArtLocalPath
+      albumArtUrl, albumArtLocalPath, url, playStartTime
     };
     this.mprisPlayers.set(player, updated);
     if (!hadPlayer) {
@@ -1135,6 +1163,53 @@ export class DeviceSession implements SystemMediaExporter {
 
     console.info(`[KDE-MVP] MPRIS: ${title} - ${artist} playing=${isPlaying} vol=${volume}`);
     this.notifyMprisChange();
+  }
+
+  /**
+   * Android MprisPlugin.showContinueWatchingNotification: a player that was
+   * playing disappeared from the list → brief "continue playing" notification
+   * that reopens the media URL on the desktop. Gated by mpris_keepwatching.
+   */
+  private maybeShowKeepWatching(player: MprisPlayerState, playerName: string): void {
+    if (Date.now() - player.playStartTime < 5000) {
+      // Playback was too short
+      console.info(`[KDE-MVP] keepwatching skip: playback too short for ${playerName}`);
+      return;
+    }
+    const httpUrl: string = this.playerHttpUrl(player.url);
+    if (httpUrl.length === 0) {
+      console.info(`[KDE-MVP] keepwatching skip: no http url for ${playerName}`);
+      return;
+    }
+    if (!PluginPrefsStore.getInstance().getMprisKeepWatching(this.getBoundDeviceId())) {
+      return;
+    }
+    const title: string = player.title.length > 0 ? player.title : playerName;
+    // Android waits 500ms to avoid the "gap between songs" false positive.
+    setTimeout(() => {
+      const still: MprisPlayerState | undefined = this.mprisPlayers.get(playerName);
+      if (still !== undefined && still.isPlaying) {
+        console.info(`[KDE-MVP] keepwatching skip: ${playerName} resumed playing`);
+        return;
+      }
+      if (!this.mprisPlayers.has(playerName)) {
+        console.info(`[KDE-MVP] keepwatching notify: ${title}`);
+        AppNotifier.getInstance().notifyKeepWatching(title, httpUrl).catch((e: Error) => {
+          console.warn('[KDE-MVP] keepwatching notify failed:', e.message);
+        });
+      }
+    }, 500) as number;
+  }
+
+  /** Validate a media URL for the continue-watching action (http/https only). */
+  private playerHttpUrl(url: string): string {
+    if (url.length === 0) {
+      return '';
+    }
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      return url;
+    }
+    return '';
   }
 
   private isAllowedAlbumArtUrl(url: string): boolean {
