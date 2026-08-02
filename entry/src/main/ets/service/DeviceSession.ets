@@ -36,6 +36,8 @@ import {
   PACKET_TYPE_SYSTEMVOLUME_REQUEST,
   PACKET_TYPE_NOTIFICATION,
   PACKET_TYPE_NOTIFICATION_REQUEST,
+  PACKET_TYPE_NOTIFICATION_REPLY,
+  PACKET_TYPE_NOTIFICATION_ACTION,
   PACKET_TYPE_MOUSEPAD_REQUEST,
   PACKET_TYPE_MOUSEPAD_KEYBOARDSTATE,
   PACKET_TYPE_MOUSEPAD_ECHO,
@@ -3271,20 +3273,86 @@ export class DeviceSession implements SystemMediaExporter {
     const appName: string = String(body.appName);
     const ticker: string = String(body.ticker);
     const peerName: string = this.peerDevice?.deviceName ?? '';
+    // Actions + quick-reply (Android NotificationsPlugin sendNotification).
+    const actions: string[] = this.parseNotificationActions(body);
+    const requestReplyId: string =
+      typeof body.requestReplyId === 'string' ? body.requestReplyId as string : '';
     // App icon: cached by MD5 hash, else fetch the payload over the side channel.
     this.resolveNotificationIcon(body, packet).then((icon: image.PixelMap | null) => {
       AppNotifier.getInstance()
-        .notifyMirroredNotification(remoteId, appName, ticker, peerName, icon)
+        .notifyMirroredNotification(remoteId, appName, ticker, peerName, icon, this.getBoundDeviceId(),
+          actions, requestReplyId)
         .catch((e: Error) => {
           console.error('[KDE-MVP] mirrored notify failed:', e.message);
         });
     }).catch((e: Error) => {
       console.warn('[KDE-MVP] notification icon resolve failed:', e.message);
       AppNotifier.getInstance()
-        .notifyMirroredNotification(remoteId, appName, ticker, peerName)
+        .notifyMirroredNotification(remoteId, appName, ticker, peerName, null, this.getBoundDeviceId(),
+          actions, requestReplyId)
         .catch((e2: Error) => {
           console.error('[KDE-MVP] mirrored notify failed:', e2.message);
         });
+    });
+  }
+
+  private parseNotificationActions(body: KdeNotificationBody): string[] {
+    const raw = body.actions;
+    const out: string[] = [];
+    if (raw !== undefined && Array.isArray(raw)) {
+      for (let i = 0; i < raw.length && out.length < 3; i++) {
+        if (typeof raw[i] === 'string' && (raw[i] as string).length > 0) {
+          out.push(raw[i] as string);
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Android NotificationsPlugin reply path: forward an inline reply back to the
+   * peer, which delivers it to the original app (kdeconnect.notification.reply).
+   */
+  public sendNotificationReply(remoteId: string, requestReplyId: string, message: string): void {
+    if (!this.isPluginEnabled(PLUGIN_RECEIVE_NOTIFICATIONS)) {
+      return;
+    }
+    if (!this.isTlsLive() || requestReplyId.length === 0) {
+      return;
+    }
+    const body: Record<string, Object> = {
+      'requestReplyId': requestReplyId,
+      'message': message
+    };
+    const json: string = serializePacket(PACKET_TYPE_NOTIFICATION_REPLY, body);
+    this.sendTls(json, (err) => {
+      if (err) {
+        console.error('[KDE-MVP] notification.reply send failed:', err.message);
+      } else {
+        console.info(`[KDE-MVP] notification.reply sent id=${remoteId}`);
+      }
+    });
+  }
+
+  /** Android NotificationsPlugin action path: trigger a remote action button. */
+  public sendNotificationAction(remoteId: string, key: string, action: string): void {
+    if (!this.isPluginEnabled(PLUGIN_RECEIVE_NOTIFICATIONS)) {
+      return;
+    }
+    if (!this.isTlsLive() || key.length === 0) {
+      return;
+    }
+    const body: Record<string, Object> = {
+      'key': key,
+      'action': action
+    };
+    const json: string = serializePacket(PACKET_TYPE_NOTIFICATION_ACTION, body);
+    this.sendTls(json, (err) => {
+      if (err) {
+        console.error('[KDE-MVP] notification.action send failed:', err.message);
+      } else {
+        console.info(`[KDE-MVP] notification.action sent id=${remoteId} key=${key}`);
+      }
     });
   }
 

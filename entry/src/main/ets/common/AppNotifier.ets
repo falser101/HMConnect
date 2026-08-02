@@ -216,6 +216,78 @@ export class AppNotifier {
     }
   }
 
+  /** WantAgent for a mirrored-notification action button (→ EntryAbility). */
+  private async buildNotifActionAgent(
+    requestCode: number,
+    deviceId: string,
+    remoteId: string,
+    key: string,
+    action: string
+  ): Promise<WantAgent | undefined> {
+    if (!this.context) {
+      return undefined;
+    }
+    try {
+      return await wantAgent.getWantAgent({
+        wants: [{
+          deviceId: '',
+          bundleName: this.context.abilityInfo.bundleName,
+          moduleName: this.context.abilityInfo.moduleName,
+          abilityName: this.context.abilityInfo.name,
+          action: 'ohos.want.action.home',
+          parameters: {
+            'notifAction': deviceId,
+            'notifActionRemoteId': remoteId,
+            'notifActionKey': key,
+            'notifActionTitle': action
+          }
+        }],
+        actionType: wantAgent.OperationType.START_ABILITY,
+        requestCode: requestCode,
+        actionFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
+      });
+    } catch (e) {
+      let err = e as BusinessError;
+      console.warn(`[Notify] notif action agent failed: code=${err.code} ${err.message}`);
+      return undefined;
+    }
+  }
+
+  /** WantAgent for a mirrored-notification quick-reply button (→ EntryAbility). */
+  private async buildNotifReplyAgent(
+    requestCode: number,
+    deviceId: string,
+    remoteId: string,
+    requestReplyId: string
+  ): Promise<WantAgent | undefined> {
+    if (!this.context) {
+      return undefined;
+    }
+    try {
+      return await wantAgent.getWantAgent({
+        wants: [{
+          deviceId: '',
+          bundleName: this.context.abilityInfo.bundleName,
+          moduleName: this.context.abilityInfo.moduleName,
+          abilityName: this.context.abilityInfo.name,
+          action: 'ohos.want.action.home',
+          parameters: {
+            'notifReply': deviceId,
+            'notifReplyRemoteId': remoteId,
+            'notifReplyRequestId': requestReplyId
+          }
+        }],
+        actionType: wantAgent.OperationType.START_ABILITY,
+        requestCode: requestCode,
+        actionFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
+      });
+    } catch (e) {
+      let err = e as BusinessError;
+      console.warn(`[Notify] notif reply agent failed: code=${err.code} ${err.message}`);
+      return undefined;
+    }
+  }
+
   /**
    * Sticky find-my-phone banner with explicit「关闭响铃」action.
    * Body tap opens the control page; button stops ringing.
@@ -809,7 +881,10 @@ export class AppNotifier {
     appName: string,
     ticker: string,
     peerDeviceName?: string,
-    icon?: image.PixelMap | null
+    icon?: image.PixelMap | null,
+    deviceId?: string,
+    actions?: string[],
+    requestReplyId?: string
   ): Promise<void> {
     if (!remoteId || remoteId.length === 0) {
       return;
@@ -846,6 +921,33 @@ export class AppNotifier {
     }
     if (agent) {
       request.wantAgent = agent;
+    }
+    // Action buttons + quick-reply (Android ReceiveNotificationsPlugin + reply).
+    const buttons: notificationManager.NotificationActionButton[] = [];
+    if (deviceId && deviceId.length > 0 && actions && actions.length > 0) {
+      for (let i = 0; i < actions.length && buttons.length < 3; i++) {
+        const title = actions[i];
+        // Android notification.action packet: key = notification id, action = title.
+        const actAgent: WantAgent | undefined = await this.buildNotifActionAgent(
+          id * 10 + i, deviceId, remoteId, remoteId, title);
+        if (actAgent) {
+          buttons.push({ title: title, wantAgent: actAgent });
+        }
+      }
+    }
+    if (deviceId && deviceId.length > 0 && requestReplyId && requestReplyId.length > 0) {
+      const replyAgent: WantAgent | undefined = await this.buildNotifReplyAgent(
+        id * 10 + 30, deviceId, remoteId, requestReplyId);
+      if (replyAgent) {
+        buttons.push({
+          title: '回复',
+          wantAgent: replyAgent,
+          userInput: { inputKey: 'replyInput' }
+        });
+      }
+    }
+    if (buttons.length > 0) {
+      request.actionButtons = buttons;
     }
     try {
       await notificationManager.publish(request);

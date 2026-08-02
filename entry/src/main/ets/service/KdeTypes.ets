@@ -32,6 +32,8 @@ export const PACKET_TYPE_SYSTEMVOLUME_REQUEST: string = 'kdeconnect.systemvolume
 /** Receive notifications from peer (Android ReceiveNotificationsPlugin). */
 export const PACKET_TYPE_NOTIFICATION: string = 'kdeconnect.notification';
 export const PACKET_TYPE_NOTIFICATION_REQUEST: string = 'kdeconnect.notification.request';
+export const PACKET_TYPE_NOTIFICATION_REPLY: string = 'kdeconnect.notification.reply';
+export const PACKET_TYPE_NOTIFICATION_ACTION: string = 'kdeconnect.notification.action';
 
 /**
  * Remote input (Android MousePadPlugin + MouseReceiverPlugin / RemoteKeyboardPlugin).
@@ -254,6 +256,7 @@ export interface PayloadTransferInfo {
  * kdeconnect.notification body (Android NotificationsPlugin → ReceiveNotificationsPlugin).
  * Cancel packets may only set id + isCancel.
  */
+/** kdeconnect.notification body (Android NotificationsPlugin.sendNotification). */
 export interface KdeNotificationBody {
   id?: string;
   appName?: string;
@@ -266,6 +269,10 @@ export interface KdeNotificationBody {
   isClearable?: boolean;
   /** MD5 of the app-icon payload (Android NotificationPlugin payloadHash). */
   payloadHash?: string;
+  /** Non-reply action titles (Android extractActions → JSONArray of strings). */
+  actions?: string[];
+  /** Reply action id (Android requestReplyId) — enables inline quick-reply. */
+  requestReplyId?: string;
   /** Present on request packets when embedded in notification.request. */
   request?: boolean;
   cancel?: string;

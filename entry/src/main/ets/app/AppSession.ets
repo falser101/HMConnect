@@ -157,6 +157,22 @@ export class AppSession {
     }
   }
 
+  /** Forward a mirrored-notification action to the peer (notification.action). */
+  public sendNotificationAction(deviceId: string, remoteId: string, key: string, action: string): void {
+    const session = this.service.getClientForDevice(deviceId);
+    if (session) {
+      session.sendNotificationAction(remoteId, key, action);
+    }
+  }
+
+  /** Forward an inline reply to the peer (notification.reply). */
+  public sendNotificationReply(deviceId: string, remoteId: string, requestReplyId: string, message: string): void {
+    const session = this.service.getClientForDevice(deviceId);
+    if (session) {
+      session.sendNotificationReply(remoteId, requestReplyId, message);
+    }
+  }
+
   /** Navigate to device detail and trigger file picker. */
   public openFileSendFor(deviceId: string): void {
     if (!this.uiContext) {

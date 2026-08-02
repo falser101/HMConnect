@@ -152,6 +152,46 @@ export default class EntryAbility extends UIAbility {
       return;
     }
 
+    // Mirrored-notification action button (deviceId in value)
+    const notifAction: string | undefined =
+      want.parameters !== undefined ? want.parameters['notifAction'] as string : undefined;
+    if (notifAction) {
+      const remoteId: string = want.parameters !== undefined
+        ? String(want.parameters['notifActionRemoteId'] ?? '')
+        : '';
+      const key: string = want.parameters !== undefined
+        ? String(want.parameters['notifActionKey'] ?? '')
+        : '';
+      const title: string = want.parameters !== undefined
+        ? String(want.parameters['notifActionTitle'] ?? '')
+        : '';
+      hilog.info(DOMAIN, 'testTag', 'Notification action device=%{public}s key=%{public}s', notifAction, key);
+      AppSession.getInstance().sendNotificationAction(notifAction, remoteId, key, title);
+      return;
+    }
+
+    // Mirrored-notification quick-reply (deviceId in value; text in userInput)
+    const notifReply: string | undefined =
+      want.parameters !== undefined ? want.parameters['notifReply'] as string : undefined;
+    if (notifReply) {
+      const remoteId: string = want.parameters !== undefined
+        ? String(want.parameters['notifReplyRemoteId'] ?? '')
+        : '';
+      const requestReplyId: string = want.parameters !== undefined
+        ? String(want.parameters['notifReplyRequestId'] ?? '')
+        : '';
+      // NotificationUserInput text arrives under 'notificationUserInput'.
+      const message: string = want.parameters !== undefined
+        ? String(want.parameters['notificationUserInput'] ?? '')
+        : '';
+      hilog.info(DOMAIN, 'testTag', 'Notification reply device=%{public}s len=%{public}d',
+        notifReply, message.length);
+      if (message.length > 0) {
+        AppSession.getInstance().sendNotificationReply(notifReply, remoteId, requestReplyId, message);
+      }
+      return;
+    }
+
     let from = '';
     if (want.parameters && want.parameters['fromNotification'] !== undefined) {
       from = String(want.parameters['fromNotification']);
