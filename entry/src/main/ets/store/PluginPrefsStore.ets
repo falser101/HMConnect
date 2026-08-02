@@ -74,6 +74,20 @@ export class PluginPrefsStore {
     this.notify();
   }
 
+  /** Synchronous write (memory) — avoids read-after-write races on rapid taps. */
+  private putSync(deviceId: string, pluginKey: string, name: string,
+    value: preferences.ValueType): void {
+    if (!this.pref) {
+      return;
+    }
+    try {
+      this.pref.putSync(this.key(deviceId, pluginKey, name), value);
+    } catch (e) {
+      console.error(`[PluginPrefs] putSync ${name} failed:`, JSON.stringify(e));
+    }
+    this.notify();
+  }
+
   private getBoolean(deviceId: string, pluginKey: string, name: string,
     fallback: boolean): boolean {
     if (!this.pref) {
@@ -212,6 +226,20 @@ export class PluginPrefsStore {
 
   public setFindMyPhoneFlashlight(deviceId: string, value: boolean): void {
     this.put(deviceId, 'findmyphone', 'findmyphone_flashlight', value);
+  }
+
+  /** Selected alarm rawfile (Android findmyphone_ringtone). */
+  public getFindMyPhoneRingtone(deviceId: string): string {
+    const v = this.getString(deviceId, 'findmyphone', 'findmyphone_ringtone', 'find_alarm.wav');
+    console.info(`[PluginPrefs] get ringtone ${deviceId}=${v}`);
+    return v;
+  }
+
+  public setFindMyPhoneRingtone(deviceId: string, value: string): void {
+    console.info(`[PluginPrefs] set ringtone ${deviceId}=${value} pref=${this.pref !== null}`);
+    this.putSync(deviceId, 'findmyphone', 'findmyphone_ringtone', value);
+    const chk = this.getString(deviceId, 'findmyphone', 'findmyphone_ringtone', '');
+    console.info(`[PluginPrefs] set ringtone re-read=${chk}`);
   }
 
   // ── mpris (mprisplugin_preferences.xml) ──────────────────

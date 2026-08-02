@@ -3098,7 +3098,8 @@ export class DeviceSession implements SystemMediaExporter {
       const peerId: string = this.peerDevice?.deviceId ?? this.getBoundDeviceId();
       const opts: FindPhoneOptions = {
         sound: PluginPrefsStore.getInstance().getFindMyPhoneSound(peerId),
-        flashlight: PluginPrefsStore.getInstance().getFindMyPhoneFlashlight(peerId)
+        flashlight: PluginPrefsStore.getInstance().getFindMyPhoneFlashlight(peerId),
+        ringtone: PluginPrefsStore.getInstance().getFindMyPhoneRingtone(peerId)
       };
       FindMyPhoneHelper.getInstance().start(peerName, opts).catch((e: Error) => {
         console.error('[KDE-MVP] FindMyPhone start failed:', e.message);

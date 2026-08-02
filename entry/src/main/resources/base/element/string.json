@@ -493,6 +493,10 @@
       "value": "闪光灯闪烁"
     },
     {
+      "name": "findmyphone_ringtone_title",
+      "value": "铃声"
+    },
+    {
       "name": "findmyphone_camera_explanation",
       "value": "响铃时同时打开闪光灯"
     },

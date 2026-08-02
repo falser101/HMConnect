@@ -17,6 +17,8 @@ export interface FindPhoneOptions {
   sound: boolean;
   /** Flash the torch while ringing (default false). */
   flashlight: boolean;
+  /** Alarm rawfile name (Android findmyphone_ringtone, default find_alarm.wav). */
+  ringtone?: string;
 }
 
 /**
@@ -45,6 +47,9 @@ export class FindMyPhoneHelper {
   private nextListenerId: number = 1;
   private flashlightOn: boolean = false;
   private static readonly DEFAULT_DURATION_MS: number = 120000;
+  /** ALARM-stream volume before we force it to max (restore on stop). */
+  private alarmPrevVolume: number = -1;
+  private ringtoneFile: string = 'find_alarm.wav';
 
   public static getInstance(): FindMyPhoneHelper {
     if (!FindMyPhoneHelper.instance) {
@@ -95,6 +100,7 @@ export class FindMyPhoneHelper {
     this.stopInternal(false);
     this.active = true;
     this.peerName = peerName.length > 0 ? peerName : '电脑';
+    this.ringtoneFile = opts.ringtone && opts.ringtone.length > 0 ? opts.ringtone : 'find_alarm.wav';
     this.loopToken += 1;
     let token = this.loopToken;
 
@@ -384,17 +390,35 @@ export class FindMyPhoneHelper {
         }
       });
 
-      // MUSIC usage pairs with continuous-task audioPlayback verification
+      // Force the ALARM stream to maximum volume (Android startPlaying), then
+      // restore the previous level when the alarm stops.
+      try {
+        const audioManager = audio.getAudioManager();
+        const cur: number = await audioManager.getVolume(audio.AudioVolumeType.ALARM);
+        const max: number = await audioManager.getMaxVolume(audio.AudioVolumeType.ALARM);
+        this.alarmPrevVolume = cur;
+        if (max > 0) {
+          await audioManager.setVolume(audio.AudioVolumeType.ALARM, max);
+        }
+        console.info(`[FindPhone] ALARM volume forced to max (${cur} → ${max})`);
+      } catch (volErr) {
+        console.warn('[FindPhone] force ALARM volume failed:', JSON.stringify(volErr));
+        this.alarmPrevVolume = -1;
+      }
+
+      // MUSIC usage pairs with continuous-task audioPlayback verification;
+      // ALARM (StreamUsage 4) keeps ringing even in silent / vibrate mode
+      // (only RINGTONE/NOTIFICATION are muted). Android uses USAGE_ALARM.
       try {
         player.audioRendererInfo = {
-          usage: audio.StreamUsage.STREAM_USAGE_MUSIC,
+          usage: audio.StreamUsage.STREAM_USAGE_ALARM,
           rendererFlags: 0
         };
       } catch (_a) {
         // ignore
       }
 
-      let raw = await this.context.resourceManager.getRawFd('find_alarm.wav');
+      let raw = await this.context.resourceManager.getRawFd(this.ringtoneFile);
       if (!this.active || token !== this.loopToken) {
         this.closeRawFd();
         return;
@@ -404,6 +428,7 @@ export class FindMyPhoneHelper {
         offset: raw.offset,
         length: raw.length
       };
+      console.info(`[FindPhone] alarm source: ${this.ringtoneFile}`);
     } catch (e) {
       console.error('[FindPhone] startAudioLoop failed:', JSON.stringify(e));
     }
@@ -433,12 +458,31 @@ export class FindMyPhoneHelper {
       }
     }
     this.closeRawFd();
+    this.restoreAlarmVolume();
+  }
+
+  /** Restore the ALARM-stream volume we forced to max (Android stopPlaying). */
+  private restoreAlarmVolume(): void {
+    if (this.alarmPrevVolume < 0) {
+      return;
+    }
+    const prev: number = this.alarmPrevVolume;
+    this.alarmPrevVolume = -1;
+    try {
+      audio.getAudioManager().setVolume(audio.AudioVolumeType.ALARM, prev).then(() => {
+        console.info(`[FindPhone] ALARM volume restored to ${prev}`);
+      }).catch((e: Error) => {
+        console.warn('[FindPhone] restore ALARM volume failed:', JSON.stringify(e));
+      });
+    } catch (e) {
+      console.warn('[FindPhone] restore ALARM volume exception:', JSON.stringify(e));
+    }
   }
 
   private closeRawFd(): void {
     try {
       if (this.context) {
-        this.context.resourceManager.closeRawFd('find_alarm.wav').catch(() => {
+        this.context.resourceManager.closeRawFd(this.ringtoneFile).catch(() => {
         });
       }
     } catch (_e) {

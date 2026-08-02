@@ -1,5 +1,9 @@
 import { common } from '@kit.AbilityKit';
 import { picker } from '@kit.CoreFileKit';
+import { media } from '@kit.MediaKit';
+import { audio } from '@kit.AudioKit';
+import { BusinessError } from '@kit.BasicServicesKit';
+import { resourceManager } from '@kit.LocalizationKit';
 import { AppSession } from '../app/AppSession';
 import { goBack, hostContext, routeParams } from '../common/NavUtil';
 import { UiTheme } from '../common/ui/UiTheme';
@@ -83,6 +87,15 @@ const DIGITIZER_SIDE_OPTIONS: SubOption[] = [
   { value: 'bottom_right', label: '右下' }
 ];
 
+/** Built-in alarm tones (rawfile names → display labels). */
+const RINGTONE_OPTIONS: SubOption[] = [
+  { value: 'find_alarm.wav', label: '经典警报' },
+  { value: 'alarm_beeps.wav', label: '哔哔声' },
+  { value: 'alarm_urgent.wav', label: '急促警报' },
+  { value: 'alarm_gong.wav', label: '锣声' },
+  { value: 'alarm_chime.wav', label: '风铃' }
+];
+
 /**
  * Per-plugin sub-settings — port of Android PluginSettingsFragment for the
  * plugins we implement. The plugin list page opens this for a plugin that is
@@ -92,6 +105,7 @@ const DIGITIZER_SIDE_OPTIONS: SubOption[] = [
 @Component
 struct PluginSubSettings {
   @State rows: SubPrefRow[] = [];
+  @State rowsRev: number = 0;
   @State pickerOpen: boolean = false;
   @State pickerTitle: string = '';
   @State pickerOptions: SubOption[] = [];
@@ -102,6 +116,12 @@ struct PluginSubSettings {
   private session: AppSession = AppSession.getInstance();
   private pendingPick: (value: string) => void = (value: string) => {
   };
+  /** Ringtone picker: play a preview of the tapped tone (Android RingtoneManager). */
+  private previewPlayer: media.AVPlayer | null = null;
+  private previewTimer: number = -1;
+  private previewRawFd: resourceManager.RawFileDescriptor | null = null;
+  private previewFilename: string = '';
+  private pickerPreview: boolean = false;
 
   aboutToAppear(): void {
     this.session.attachUiContext(this.getUIContext());
@@ -124,6 +144,10 @@ struct PluginSubSettings {
       });
     }
     this.buildRows();
+  }
+
+  aboutToDisappear(): void {
+    this.stopRingtonePreview();
   }
 
   private tapLabel(value: string): string {
@@ -293,6 +317,13 @@ struct PluginSubSettings {
         options: []
       });
       list.push({
+        kind: 'list', rowKey: 'ringtone',
+        title: $r('app.string.findmyphone_ringtone_title'),
+        summary: this.optionLabel(RINGTONE_OPTIONS, store.getFindMyPhoneRingtone(this.deviceId)),
+        switchOn: false,
+        options: RINGTONE_OPTIONS
+      });
+      list.push({
         kind: 'switch', rowKey: 'flashlight',
         title: $r('app.string.findmyphone_flashlight_title'),
         summary: $r('app.string.findmyphone_camera_explanation'),
@@ -324,6 +355,7 @@ struct PluginSubSettings {
     }
 
     this.rows = list;
+    this.rowsRev++;
   }
 
   private onToggle(row: SubPrefRow, value: boolean): void {
@@ -389,6 +421,9 @@ struct PluginSubSettings {
       store.setDigitizerDrawButtonSide(this.deviceId, value);
     } else if (this.pluginKey === PLUGIN_MPRIS && row.rowKey === 'mpris_time') {
       store.setMprisTimeSeconds(this.deviceId, parseInt(value, 10));
+    } else if (this.pluginKey === PLUGIN_FIND_MY_PHONE && row.rowKey === 'ringtone') {
+      console.info(`[SubSettings] ringtone pick device=${this.deviceId} value=${value}`);
+      store.setFindMyPhoneRingtone(this.deviceId, value);
     }
     this.buildRows();
   }
@@ -440,9 +475,97 @@ struct PluginSubSettings {
       this.pendingPick = (value: string) => {
         this.onPickList(row, value);
       };
+      // Ringtone rows preview the tone on tap (Android RingtoneManager).
+      this.pickerPreview = this.pluginKey === PLUGIN_FIND_MY_PHONE && row.rowKey === 'ringtone';
       this.pickerOpen = true;
     } else if (row.kind === 'folder') {
       this.onPickFolder(row);
+    }
+  }
+
+  /** Play a short preview of a rawfile tone (Android RingtoneManager preview). */
+  private playRingtonePreview(filename: string): void {
+    this.stopRingtonePreview();
+    const ctx: common.UIAbilityContext | undefined = hostContext(this.getUIContext());
+    if (!ctx) {
+      return;
+    }
+    try {
+      ctx.resourceManager.getRawFd(filename).then((raw: resourceManager.RawFileDescriptor) => {
+        this.previewRawFd = raw;
+        this.previewFilename = filename;
+        media.createAVPlayer().then((player: media.AVPlayer) => {
+          this.previewPlayer = player;
+          player.on('stateChange', (state: string, _reason: media.StateChangeReason) => {
+            if (state === 'initialized') {
+              player.prepare().catch((e: BusinessError) => {
+                console.warn(`[SubSettings] preview prepare failed: code=${e.code}`);
+                this.stopRingtonePreview();
+              });
+            } else if (state === 'prepared') {
+              player.play().catch((e: BusinessError) => {
+                console.warn(`[SubSettings] preview play failed: code=${e.code}`);
+              });
+            } else if (state === 'completed') {
+              this.stopRingtonePreview();
+            }
+          });
+          player.on('error', (_err: BusinessError) => {
+            this.stopRingtonePreview();
+          });
+          player.fdSrc = {
+            fd: raw.fd,
+            offset: raw.offset,
+            length: raw.length
+          };
+          // Safety: never ring forever in the settings page.
+          this.previewTimer = setTimeout(() => {
+            this.stopRingtonePreview();
+          }, 4000) as number;
+        }).catch((e: BusinessError) => {
+          console.warn(`[SubSettings] preview player create failed: code=${e.code}`);
+        });
+      }).catch((e: Error) => {
+        console.warn(`[SubSettings] preview getRawFd failed: ${e.message}`);
+      });
+    } catch (e) {
+      console.warn('[SubSettings] preview exception:', JSON.stringify(e));
+    }
+  }
+
+  private stopRingtonePreview(): void {
+    if (this.previewTimer >= 0) {
+      clearTimeout(this.previewTimer);
+      this.previewTimer = -1;
+    }
+    let p = this.previewPlayer;
+    this.previewPlayer = null;
+    if (p) {
+      try {
+        p.stop().then(() => {
+          return p!.release();
+        }).catch(() => {
+          try {
+            p!.release();
+          } catch (_e) {
+          }
+        });
+      } catch (_e) {
+        try {
+          p.release();
+        } catch (_e2) {
+        }
+      }
+    }
+    if (this.previewRawFd) {
+      if (this.previewFilename.length > 0) {
+        try {
+          hostContext(this.getUIContext())?.resourceManager.closeRawFd(this.previewFilename);
+        } catch (_e) {
+        }
+      }
+      this.previewRawFd = null;
+      this.previewFilename = '';
     }
   }
 
@@ -517,7 +640,7 @@ struct PluginSubSettings {
         Column() {
           ForEach(this.rows, (row: SubPrefRow, index: number) => {
             this.PrefRowView(row)
-          }, (row: SubPrefRow, index: number) => `${this.pluginKey}_${row.rowKey}_${index}`)
+          }, (row: SubPrefRow, index: number) => `${this.pluginKey}_${row.rowKey}_${this.rowsRev}`)
 
           Column().width('100%').height(24)
         }
@@ -536,6 +659,7 @@ struct PluginSubSettings {
             .height('100%')
             .backgroundColor(UiTheme.scrim)
             .onClick(() => {
+              this.stopRingtonePreview();
               this.pickerOpen = false;
             })
           Column({ space: 4 }) {
@@ -559,6 +683,9 @@ struct PluginSubSettings {
               .height(44)
               .borderRadius(UiTheme.radiusCard)
               .onClick(() => {
+                if (this.pickerPreview) {
+                  this.playRingtonePreview(opt.value);
+                }
                 this.pickerSelected = opt.label;
                 this.pickerOpen = false;
                 this.pendingPick(opt.value);
@@ -572,6 +699,7 @@ struct PluginSubSettings {
                 .backgroundColor(UiTheme.surfaceVariant)
                 .borderRadius(UiTheme.radiusButton)
                 .onClick(() => {
+                  this.stopRingtonePreview();
                   this.pickerOpen = false;
                 })
             }

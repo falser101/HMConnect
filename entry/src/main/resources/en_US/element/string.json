@@ -437,6 +437,10 @@
       "value": "Flashlight"
     },
     {
+      "name": "findmyphone_ringtone_title",
+      "value": "Ringtone"
+    },
+    {
       "name": "findmyphone_camera_explanation",
       "value": "Also turn on the flashlight while ringing"
     },
