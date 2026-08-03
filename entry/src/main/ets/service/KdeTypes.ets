@@ -49,6 +49,8 @@ export const PACKET_TYPE_MOUSEPAD_ECHO: string = 'kdeconnect.mousepad.echo';
 export const PACKET_TYPE_RUNCOMMAND: string = 'kdeconnect.runcommand';
 export const PACKET_TYPE_RUNCOMMAND_REQUEST: string = 'kdeconnect.runcommand.request';
 export const PACKET_TYPE_RUNCOMMAND_OUTPUT: string = 'kdeconnect.runcommand.output';
+/** Android PresenterPlugin pointer (gyro/touch) via kdeconnect.presenter. */
+export const PACKET_TYPE_PRESENTER: string = 'kdeconnect.presenter';
 
 /** Drawing tablet (Android DigitizerPlugin) — this device is the pen surface. */
 export const PACKET_TYPE_DIGITIZER: string = 'kdeconnect.digitizer';
@@ -282,6 +284,20 @@ export interface KdeNotificationBody {
 export interface KdeNotificationRequestBody {
   request?: boolean;
   cancel?: string;
+}
+
+/** Data for the system-share → pick-device flow (ohos.want.action.sendData). */
+export interface ShareSendData {
+  /** Absolute cache paths of the shared files (empty when text-only). */
+  filePaths: string[];
+  /** Display file name (first file). */
+  fileName: string;
+  /** MIME type from the share want. */
+  mime: string;
+  /** True when the share is text/URL (no file payload). */
+  isText: boolean;
+  /** Text/URL content when isText. */
+  textContent: string;
 }
 
 /** kdeconnect.battery body (phone ↔ desktop). */

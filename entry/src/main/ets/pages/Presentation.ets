@@ -33,12 +33,18 @@ struct PresentationPage {
   @State deviceName: string = '';
   @State connected: boolean = false;
   @State connecting: boolean = false;
+  @State pointerMode: boolean = false;
   private deviceId: string = '';
   private session: AppSession = AppSession.getInstance();
   private client: DeviceSession | null = null;
   private statusSubId: number = -1;
   private connectTried: boolean = false;
   private readonly emptyMods: MousepadModifiers = {};
+  /** Pointer pixels → presenter dx/dy factor (Android gyro sensitivity scale). */
+  private readonly pointerScale: number = 3;
+  /** Last cumulative pan offset — to send incremental deltas. */
+  private lastPointerX: number = 0;
+  private lastPointerY: number = 0;
 
   aboutToAppear(): void {
     const params = routeParams(this.getUIContext()) as PresentationRouteParams;
@@ -144,6 +150,37 @@ struct PresentationPage {
     }
   }
 
+  /** Pointer mode drag → kdeconnect.presenter {dx,dy} (Android sendPointer). */
+  private onPointerStart(): void {
+    this.lastPointerX = 0;
+    this.lastPointerY = 0;
+  }
+
+  private onPointerMove(offsetX: number, offsetY: number): void {
+    if (!this.connected) {
+      return;
+    }
+    // ArkUI offsets are cumulative from gesture start → send incremental deltas.
+    const dx: number = offsetX - this.lastPointerX;
+    const dy: number = offsetY - this.lastPointerY;
+    this.lastPointerX = offsetX;
+    this.lastPointerY = offsetY;
+    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) {
+      return;
+    }
+    const cl = this.liveClient();
+    if (cl) {
+      cl.sendPresenterPointer(dx * this.pointerScale, dy * this.pointerScale);
+    }
+  }
+
+  private stopPointer(): void {
+    const cl = this.liveClient();
+    if (cl) {
+      cl.sendPresenterStop();
+    }
+  }
+
   private showToast(msg: ResourceStr): void {
     this.getUIContext().getPromptAction().showToast({ message: msg, duration: 1500 });
   }
@@ -200,35 +237,67 @@ struct PresentationPage {
           .padding({ top: 4 })
       }
 
-      // Swipe area + nav buttons
-      Column({ space: 16 }) {
-        Row({ space: 16 }) {
-          this.NavButton($r('app.string.presentation_prev'), KdeIconRes.arrowBack(), () => {
-            this.sendSpecialKey(MOUSEPAD_SPECIAL_KEY_PAGE_UP);
-          })
-          this.NavButton($r('app.string.presentation_next'), KdeIconRes.chevronRight(), () => {
-            this.sendSpecialKey(MOUSEPAD_SPECIAL_KEY_PAGE_DOWN);
-          })
+      // Swipe area + nav buttons (slide mode) OR pointer pad (pointer mode)
+      if (this.pointerMode) {
+        Column({ space: 8 }) {
+          Row() {
+            KdeIcon({ symbol: KdeIconRes.touchpad(), iconSize: 20, color: UiTheme.primary })
+            Text('指针模式：拖动控制桌面光标')
+              .fontSize(UiTheme.bodySm)
+              .fontColor(UiTheme.primary)
+              .margin({ left: 6 })
+          }
+          Column()
+            .layoutWeight(1)
+            .width('100%')
+            .backgroundColor(UiTheme.cardBg)
+            .borderRadius(UiTheme.radiusCard)
+            .gesture(
+              PanGesture({ fingers: 1, direction: PanDirection.All })
+                .onActionStart(() => {
+                  this.onPointerStart();
+                })
+                .onActionUpdate((event: GestureEvent) => {
+                  this.onPointerMove(event.offsetX, event.offsetY);
+                })
+                .onActionEnd(() => {
+                  this.stopPointer();
+                })
+            )
         }
+        .layoutWeight(1)
         .width('100%')
+        .padding(24)
+      } else {
+        Column({ space: 16 }) {
+          Row({ space: 16 }) {
+            this.NavButton($r('app.string.presentation_prev'), KdeIconRes.arrowBack(), () => {
+              this.sendSpecialKey(MOUSEPAD_SPECIAL_KEY_PAGE_UP);
+            })
+            this.NavButton($r('app.string.presentation_next'), KdeIconRes.chevronRight(), () => {
+              this.sendSpecialKey(MOUSEPAD_SPECIAL_KEY_PAGE_DOWN);
+            })
+          }
+          .width('100%')
 
-        Text($r('app.string.presentation_hint'))
-          .fontSize(UiTheme.bodySm)
-          .fontColor(UiTheme.textMuted)
-          .textAlign(TextAlign.Center)
-          .margin({ top: 8 })
+          Text($r('app.string.presentation_hint'))
+            .fontSize(UiTheme.bodySm)
+            .fontColor(UiTheme.textMuted)
+            .textAlign(TextAlign.Center)
+            .margin({ top: 8 })
+        }
+        .layoutWeight(1)
+        .width('100%')
+        .padding(24)
+        .gesture(
+          SwipeGesture({ direction: SwipeDirection.Horizontal, speed: 80 })
+            .onAction((event: GestureEvent) => {
+              this.onSwipe(event.angle);
+            })
+        )
       }
-      .layoutWeight(1)
-      .width('100%')
-      .padding(24)
-      .gesture(
-        SwipeGesture({ direction: SwipeDirection.Horizontal, speed: 80 })
-          .onAction((event: GestureEvent) => {
-            this.onSwipe(event.angle);
-          })
-      )
 
-      // Bottom actions: start / exit slideshow
+      // Bottom actions: start / exit slideshow + pointer toggle
       Row({ space: 12 }) {
         this.ActionButton($r('app.string.presentation_start'), () => {
           this.sendSpecialKey(MOUSEPAD_SPECIAL_KEY_F5);
@@ -236,6 +305,16 @@ struct PresentationPage {
         this.ActionButton($r('app.string.presentation_exit'), () => {
           this.sendSpecialKey(MOUSEPAD_SPECIAL_KEY_ESC);
         })
+        Button(this.pointerMode ? '退出指针' : '指针')
+          .height(46)
+          .fontSize(UiTheme.bodyMd)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.pointerMode ? UiTheme.onPrimary : UiTheme.onSurface)
+          .backgroundColor(this.pointerMode ? UiTheme.primary : UiTheme.surfaceVariant)
+          .borderRadius(UiTheme.radiusButton)
+          .onClick(() => {
+            this.pointerMode = !this.pointerMode;
+          })
       }
       .width('100%')
       .padding({ left: 24, right: 24, bottom: 24 })

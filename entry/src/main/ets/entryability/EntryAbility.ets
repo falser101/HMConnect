@@ -3,6 +3,8 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { fileUri, fileIo } from '@kit.CoreFileKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
+import util from '@ohos.util';
+import { ShareSendData } from '../service/KdeTypes';
 import { AppSession } from '../app/AppSession';
 import { FindMyPhoneHelper } from '../common/FindMyPhoneHelper';
 import { AppNotifier } from '../common/AppNotifier';
@@ -59,6 +61,15 @@ export default class EntryAbility extends UIAbility {
 
   /** Notification actions: open file, share file, find phone, stop ring. */
   private handleWant(want: Want): void {
+    // System share target (ohos.want.action.sendData) — share from another app
+    if (want.action === 'ohos.want.action.sendData') {
+      hilog.info(DOMAIN, 'testTag', 'System share received: type=%{public}s uri=%{public}s',
+        want.type ?? '', want.uri ?? '');
+      hilog.info(DOMAIN, 'testTag', 'System share WANT: %{public}s', JSON.stringify(want));
+      this.handleSharedData(want);
+      return;
+    }
+
     // File-open from notification tap
     const openFile: string | undefined =
       want.parameters !== undefined ? want.parameters['openFile'] as string : undefined;
@@ -206,6 +217,164 @@ export default class EntryAbility extends UIAbility {
       if (FindMyPhoneHelper.getInstance().isActive()) {
         AppSession.getInstance().openFindPhonePage();
       }
+    }
+  }
+
+  /**
+   * System share sheet picked us: copy the shared FD/URI into the cache and
+   * route to the device-picker (Android ShareActivity equivalent).
+   */
+  private handleSharedData(want: Want): void {
+    this.copySharedToCache(want).then((data: ShareSendData) => {
+      hilog.info(DOMAIN, 'testTag', 'Share ready file=%{public}s text=%{public}d',
+        data.fileName, data.isText ? 1 : 0);
+      AppSession.getInstance().openShareSend(data);
+    }).catch((e: Error) => {
+      hilog.error(DOMAIN, 'testTag', 'handleSharedData failed: %{public}s', e.message);
+    });
+  }
+
+  private async copySharedToCache(want: Want): Promise<ShareSendData> {
+    const mime: string = typeof want.type === 'string' && want.type.length > 0
+      ? want.type
+      : 'application/octet-stream';
+    const uris: string[] = this.sharedUris(want);
+    const fileName: string = this.sharedFileName(want, uris);
+
+    // Text/URL share (no file URI) → pure text path.
+    if (uris.length === 0) {
+      return {
+        filePaths: [],
+        fileName: fileName,
+        mime: mime,
+        isText: true,
+        textContent: this.sharedText(want)
+      };
+    }
+
+    // Copy each shared URI into the cache (temp permission lasts the invocation).
+    const cacheDir: string = this.context.cacheDir;
+    const paths: string[] = [];
+    for (let i = 0; i < uris.length; i++) {
+      const target: string = `${cacheDir}/shared_${Date.now()}_${i}_${this.sanitizeShareName(fileName)}`;
+      try {
+        await this.copyUriToFile(uris[i], target);
+        paths.push(target);
+      } catch (e) {
+        hilog.error(DOMAIN, 'testTag', 'copy shared uri failed: %{public}s', JSON.stringify(e));
+      }
+    }
+    if (paths.length === 0) {
+      return {
+        filePaths: [],
+        fileName: fileName,
+        mime: mime,
+        isText: true,
+        textContent: ''
+      };
+    }
+
+    return { filePaths: paths, fileName: fileName, mime: mime, isText: false, textContent: '' };
+  }
+
+  /**
+   * File URIs delivered by the share panel. Newer HarmonyOS puts them in
+   * parameters['ability.params.stream'] (array); classic want.uri also works.
+   */
+  private sharedUris(want: Want): string[] {
+    const out: string[] = [];
+    try {
+      const stream = want.parameters ? want.parameters['ability.params.stream'] as object : undefined;
+      if (stream && Array.isArray(stream)) {
+        for (let i = 0; i < stream.length; i++) {
+          if (typeof stream[i] === 'string' && (stream[i] as string).length > 0) {
+            out.push(stream[i] as string);
+          }
+        }
+      }
+    } catch (_e) {
+    }
+    if (typeof want.uri === 'string' && want.uri.length > 0) {
+      out.push(want.uri);
+    }
+    return out;
+  }
+
+  private sharedFileName(want: Want, uris: string[]): string {
+    try {
+      const names = want.parameters ? want.parameters['ability.picker.fileNames'] as object : undefined;
+      if (names && Array.isArray(names) && names.length > 0) {
+        const first = names[0] as string;
+        if (first && first.length > 0) {
+          return first;
+        }
+      }
+    } catch (_e) {
+    }
+    if (uris.length > 0) {
+      const seg = uris[0].split('/');
+      const last = seg[seg.length - 1] || '';
+      if (last.length > 0) {
+        return decodeURIComponent(last);
+      }
+    }
+    const type: string = typeof want.type === 'string' ? want.type : 'file';
+    return `shared.${this.extForMime(type)}`;
+  }
+
+  private sharedText(want: Want): string {
+    try {
+      const t = want.parameters ? want.parameters['text'] as string : undefined;
+      if (t && t.length > 0) {
+        return t;
+      }
+    } catch (_e) {
+    }
+    return '';
+  }
+
+  private sanitizeShareName(name: string): string {
+    const cleaned: string = name.replace(/[\\/:*?"<>|]/g, '_');
+    return cleaned.length > 0 ? cleaned : 'shared';
+  }
+
+  private extForMime(mime: string): string {
+    if (mime.startsWith('image/')) {
+      return mime === 'image/png' ? 'png' : 'jpg';
+    }
+    if (mime.startsWith('video/')) {
+      return 'mp4';
+    }
+    if (mime.startsWith('audio/')) {
+      return 'mp3';
+    }
+    if (mime === 'application/pdf') {
+      return 'pdf';
+    }
+    if (mime === 'text/plain') {
+      return 'txt';
+    }
+    return 'bin';
+  }
+
+  private async copyUriToFile(uri: string, target: string): Promise<void> {
+    const src = fileIo.openSync(uri, fileIo.OpenMode.READ_ONLY);
+    const out = fileIo.openSync(target, fileIo.OpenMode.CREATE | fileIo.OpenMode.WRITE_ONLY |
+      fileIo.OpenMode.TRUNC);
+    const buf: ArrayBuffer = new ArrayBuffer(65536);
+    try {
+      while (true) {
+        const n: number = fileIo.readSync(src.fd, buf);
+        if (n <= 0) {
+          break;
+        }
+        const slice: ArrayBuffer = new ArrayBuffer(n);
+        new Uint8Array(slice).set(new Uint8Array(buf, 0, n));
+        fileIo.writeSync(out.fd, slice);
+      }
+    } finally {
+      fileIo.closeSync(src);
+      fileIo.closeSync(out);
     }
   }
 

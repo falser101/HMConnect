@@ -1,7 +1,7 @@
 import { common } from '@kit.AbilityKit';
 import { UIContext, router } from '@kit.ArkUI';
 import { KdeService } from '../service/KdeService';
-import { DeviceListItem, KdeStatus } from '../service/KdeTypes';
+import { DeviceListItem, KdeStatus, ShareSendData } from '../service/KdeTypes';
 import { FindMyPhoneHelper } from '../common/FindMyPhoneHelper';
 import { RemoteMprisMediaSession } from '../service/RemoteMprisMediaSession';
 
@@ -20,6 +20,7 @@ export class AppSession {
   private findPhoneNavSubId: number = -1;
 
   private deviceListeners: Map<number, (items: DeviceListItem[]) => void> = new Map();
+  private pendingShare: ShareSendData | null = null;
   private statusListeners: Map<number, (status: KdeStatus) => void> = new Map();
   private nextListenerId: number = 1;
 
@@ -73,6 +74,38 @@ export class AppSession {
     // If already ringing when page becomes visible, open the control screen
     if (FindMyPhoneHelper.getInstance().isActive()) {
       this.openFindPhonePage();
+    }
+    // Deliver any system-share data queued before the UI was ready.
+    if (this.pendingShare) {
+      const d: ShareSendData = this.pendingShare;
+      this.pendingShare = null;
+      setTimeout(() => {
+        this.openShareSend(d);
+      }, 120);
+    }
+  }
+
+  /**
+   * Open the share→device picker for a system-share (sendData) payload.
+   * Queued until the UI context is attached (cold start from the share sheet).
+   */
+  public openShareSend(data: ShareSendData): void {
+    if (!this.uiContext) {
+      this.pendingShare = data;
+      console.info('[AppSession] share deferred until UI ready');
+      return;
+    }
+    this.pendingShare = null;
+    try {
+      let options: router.RouterOptions = {
+        url: 'pages/ShareSend',
+        params: data
+      };
+      this.uiContext.getRouter().pushUrl(options).catch((e: Error) => {
+        console.error('[AppSession] openShareSend pushUrl failed:', e.message);
+      });
+    } catch (e) {
+      console.error('[AppSession] openShareSend exception:', JSON.stringify(e));
     }
   }
 

@@ -35,6 +35,88 @@
             "actions": [
               "ohos.want.action.home"
             ]
+          },
+          {
+            "actions": [
+              "ohos.want.action.sendData"
+            ],
+            "uris": [
+              {
+                "scheme": "file",
+                "utd": "general.text",
+                "maxFileSupported": 1
+              },
+              {
+                "scheme": "file",
+                "utd": "general.plain-text",
+                "maxFileSupported": 1
+              },
+              {
+                "scheme": "file",
+                "utd": "general.hyperlink",
+                "maxFileSupported": 1
+              },
+              {
+                "scheme": "file",
+                "utd": "general.image",
+                "maxFileSupported": 50
+              },
+              {
+                "scheme": "file",
+                "utd": "general.jpeg",
+                "maxFileSupported": 50
+              },
+              {
+                "scheme": "file",
+                "utd": "general.png",
+                "maxFileSupported": 50
+              },
+              {
+                "scheme": "file",
+                "utd": "general.gif",
+                "maxFileSupported": 50
+              },
+              {
+                "scheme": "file",
+                "utd": "general.video",
+                "maxFileSupported": 10
+              },
+              {
+                "scheme": "file",
+                "utd": "general.audio",
+                "maxFileSupported": 10
+              },
+              {
+                "scheme": "file",
+                "utd": "general.archive",
+                "maxFileSupported": 10
+              },
+              {
+                "scheme": "file",
+                "utd": "general.zip-archive",
+                "maxFileSupported": 10
+              },
+              {
+                "scheme": "file",
+                "utd": "general.pdf",
+                "maxFileSupported": 10
+              },
+              {
+                "scheme": "file",
+                "utd": "general.document",
+                "maxFileSupported": 10
+              },
+              {
+                "scheme": "file",
+                "utd": "general.ebook",
+                "maxFileSupported": 10
+              },
+              {
+                "scheme": "file",
+                "utd": "general.file",
+                "maxFileSupported": 10
+              }
+            ]
           }
         ]
       }

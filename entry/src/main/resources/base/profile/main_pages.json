@@ -13,6 +13,7 @@
     "pages/RemoteInput",
     "pages/RemoteInputCompose",
     "pages/RunCommand",
+    "pages/ShareSend",
     "pages/TrustedNetworks"
   ]
 }

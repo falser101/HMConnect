@@ -44,6 +44,7 @@ import {
   PACKET_TYPE_RUNCOMMAND,
   PACKET_TYPE_RUNCOMMAND_REQUEST,
   PACKET_TYPE_RUNCOMMAND_OUTPUT,
+  PACKET_TYPE_PRESENTER,
   PACKET_TYPE_DIGITIZER,
   PACKET_TYPE_DIGITIZER_SESSION,
   KdeNotificationBody,
@@ -4256,6 +4257,35 @@ export class DeviceSession implements SystemMediaExporter {
     this.sendMousepadPacket(body);
   }
 
+  /** Android PresenterPlugin.sendPointer — pointer move via kdeconnect.presenter. */
+  public sendPresenterPointer(dx: number, dy: number): void {
+    if (!this.isTlsLive()) {
+      return;
+    }
+    const body: Record<string, Object> = { 'dx': dx, 'dy': dy };
+    const json: string = serializePacket(PACKET_TYPE_PRESENTER, body);
+    console.info(`[KDE-MVP] presenter pointer dx=${dx.toFixed(1)} dy=${dy.toFixed(1)}`);
+    this.sendTls(json, (err) => {
+      if (err) {
+        console.error('[KDE-MVP] presenter pointer send failed:', err.message);
+      }
+    });
+  }
+
+  /** Android PresenterPlugin.stopPointer — release the presenter pointer. */
+  public sendPresenterStop(): void {
+    if (!this.isTlsLive()) {
+      return;
+    }
+    const body: Record<string, Object> = { 'stop': true };
+    const json: string = serializePacket(PACKET_TYPE_PRESENTER, body);
+    this.sendTls(json, (err) => {
+      if (err) {
+        console.error('[KDE-MVP] presenter stop send failed:', err.message);
+      }
+    });
+  }
+
   public sendMousepadLeftClick(): void {
     this.sendMousepadPacket({ singleclick: true });
   }
@@ -4563,6 +4593,48 @@ export class DeviceSession implements SystemMediaExporter {
       return;
     }
     this.sendClipboard(text);
+  }
+
+  /** Share a text snippet to the peer (Android SharePlugin.receiveText path). */
+  public sendTextToPeer(text: string): void {
+    if (!this.isPluginEnabled(PLUGIN_SHARE) || !this.isTlsLive()) {
+      return;
+    }
+    const body: KdeShareRequestBody = {
+      filename: '',
+      numberOfFiles: 0,
+      totalPayloadSize: 0,
+      text: text
+    };
+    const json: string = serializePacket(PACKET_TYPE_SHARE_REQUEST, body);
+    this.sendTls(json, (err) => {
+      if (err) {
+        console.error('[KDE-MVP] share text send failed:', err.message);
+      } else {
+        console.info('[KDE-MVP] share text sent');
+      }
+    });
+  }
+
+  /** Share a URL to the peer (Android SharePlugin.receiveUrl path). */
+  public sendUrlToPeer(url: string): void {
+    if (!this.isPluginEnabled(PLUGIN_SHARE) || !this.isTlsLive()) {
+      return;
+    }
+    const body: KdeShareRequestBody = {
+      filename: '',
+      numberOfFiles: 0,
+      totalPayloadSize: 0,
+      url: url
+    };
+    const json: string = serializePacket(PACKET_TYPE_SHARE_REQUEST, body);
+    this.sendTls(json, (err) => {
+      if (err) {
+        console.error('[KDE-MVP] share url send failed:', err.message);
+      } else {
+        console.info('[KDE-MVP] share url sent');
+      }
+    });
   }
 
   /** User-initiated pair request (Android: requestPairing). */
