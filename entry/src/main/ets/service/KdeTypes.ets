@@ -19,7 +19,13 @@ export const PAYLOAD_TRANSFER_MAX_PORT: number = 1764;
 export const PACKET_TYPE_SHARE_REQUEST: string = 'kdeconnect.share.request';
 export const PACKET_TYPE_SHARE_REQUEST_UPDATE: string = 'kdeconnect.share.request.update';
 
-/** Fixed MVP device id (must match CN of bundled TLS cert). */
+/**
+ * Device id. Must equal the CN of the bundled TLS cert (rawfile/certs/device_cert.pem):
+ * desktop/Android KDE Connect peers verify the identity packet's deviceId against the
+ * peer certificate's CN and drop the connection on mismatch. Per-device cert generation
+ * is not available on HarmonyOS, so the id stays the fixed cert CN; discovery filters
+ * self-packets by source IP instead, so two HMConnect installs still see each other.
+ */
 export const MY_DEVICE_ID: string = 'a1b2c3d4e5f6789012345678abcdef01';
 
 export const PACKET_TYPE_MPRIS: string = 'kdeconnect.mpris';

@@ -1073,7 +1073,6 @@ struct DeviceDetail {
         color: btn.disabled ? UiTheme.textMuted : UiTheme.iconTint
       })
         .margin({ top: 12 })
-        .opacity(btn.disabled ? 0.4 : 1)
 
       Text(btn.label)
         .fontSize(18)
@@ -1084,7 +1083,6 @@ struct DeviceDetail {
         .width('100%')
         .textAlign(TextAlign.Start)
         .margin({ top: 10 })
-        .opacity(btn.disabled ? 0.4 : 1)
     }
     .width('100%')
     .padding({ left: 16, right: 16, top: 10, bottom: 10 })

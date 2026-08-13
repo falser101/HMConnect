@@ -1,5 +1,6 @@
 import socket from '@ohos.net.socket';
 import deviceInfo from '@ohos.deviceInfo';
+import { connection } from '@kit.NetworkKit';
 import {
   KdeDevice,
   KdeIdentityBody,
@@ -37,6 +38,39 @@ export class KdeDiscover {
    * Broadcast 255.255.255.255 still runs for new-device discovery (hub drops dup TCP if live).
    */
   private connectedPeerIps: Set<string> = new Set();
+  /**
+   * Our own local IPs. MY_DEVICE_ID equals the cert CN on every install, so the
+   * discovery self-filter must drop by source IP (our own broadcast loopback) instead
+   * of deviceId — otherwise two HMConnect installs would hide each other.
+   */
+  private ownIps: Set<string> = new Set();
+
+  /** Refresh our own local IP set (used by the discovery self-filter). */
+  public async refreshOwnIps(): Promise<void> {
+    const next: Set<string> = new Set();
+    try {
+      const netHandle = await connection.getDefaultNet();
+      const props = await connection.getConnectionProperties(netHandle);
+      const addrs = props.linkAddresses;
+      for (let i = 0; i < addrs.length; i++) {
+        const a = addrs[i].address?.address;
+        if (a !== undefined && a !== null && a.length > 0) {
+          next.add(a);
+        }
+      }
+    } catch (e) {
+      console.warn('[KDE-MVP] refreshOwnIps failed:', JSON.stringify(e));
+    }
+    this.ownIps = next;
+    console.info(`[KDE-MVP] Own IPs: ${Array.from(this.ownIps).join(',') || '(none)'}`);
+  }
+
+  private isOwnAddress(ip: string): boolean {
+    if (this.ownIps.size === 0) {
+      return false;
+    }
+    return this.ownIps.has(ip);
+  }
 
   public setTcpPort(port: number): void {
     this.tcpPort = port;
@@ -77,6 +111,9 @@ export class KdeDiscover {
     }
     this.running = true;
     this.udpSocket = socket.constructUDPSocketInstance();
+    // Own-IP set powers the discovery self-filter (needed because MY_DEVICE_ID is shared).
+    this.refreshOwnIps().catch(() => {
+    });
 
     let bindAddr: socket.NetAddress = {
       address: '0.0.0.0',
@@ -138,7 +175,13 @@ export class KdeDiscover {
             continue;
           }
           let body = packet.body as KdeIdentityBody;
-          if (!body || !body.deviceId || body.deviceId === MY_DEVICE_ID) {
+          if (!body || !body.deviceId) {
+            continue;
+          }
+          // Self-filter by SOURCE IP, not deviceId: MY_DEVICE_ID equals the cert CN on
+          // every install, so another HMConnect install (same id, different IP) must
+          // still be discovered; only our own broadcast loopback (same id + own IP) is dropped.
+          if (body.deviceId === MY_DEVICE_ID && this.isOwnAddress(value.remoteInfo.address)) {
             continue;
           }
 
@@ -262,6 +305,8 @@ export class KdeDiscover {
       return;
     }
     console.info('[KdeDiscover] onNetworkChange — re-announcing');
+    this.refreshOwnIps().catch(() => {
+    });
     this.broadcastIdentity();
   }
 

@@ -1,4 +1,4 @@
-import { AbilityConstant, ConfigurationConstant, UIAbility, Want, wantConstant } from '@kit.AbilityKit';
+import { AbilityConstant, Configuration, ConfigurationConstant, UIAbility, Want, wantConstant } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { fileUri, fileIo } from '@kit.CoreFileKit';
@@ -52,6 +52,27 @@ export default class EntryAbility extends UIAbility {
     } catch (e) {
       hilog.error(DOMAIN, 'testTag', 'setColorMode failed: %{public}s', JSON.stringify(e));
     }
+    // Chrome colors follow the newly-active color mode (NOT_SET → system).
+    this.refreshChrome();
+  }
+
+  /** Re-resolve surface/onSurface and repaint window + system bars for the current mode. */
+  private refreshChrome(): void {
+    try {
+      ImmersiveUtil.applyChrome(
+        cssColor(this.context, UiTheme.surface),
+        cssColor(this.context, UiTheme.onSurface)
+      );
+    } catch (e) {
+      hilog.error(DOMAIN, 'testTag', 'refreshChrome failed: %{public}s', JSON.stringify(e));
+    }
+  }
+
+  onConfigurationUpdate(newConfig: Configuration): void {
+    hilog.info(DOMAIN, 'testTag', 'onConfigurationUpdate colorMode=%{public}s',
+      newConfig.colorMode);
+    // Follow-system mode: re-resolve chrome when the system light/dark flips.
+    this.refreshChrome();
   }
 
   onNewWant(want: Want, _launchParam: AbilityConstant.LaunchParam): void {

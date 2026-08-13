@@ -244,6 +244,18 @@ export class DeviceSession implements SystemMediaExporter {
   private sessionGen: number = 0;
   private activeTlsGen: number = -1;
   private handlingIncoming: boolean = false;
+  /**
+   * Poke detection for phone↔phone connects. The initiator opens a TCP, sends
+   * identity (targetDeviceId == us) and closes immediately ("poke"), expecting
+   * us to reverse-connect back (Android/desktop style). Android/desktop peers do
+   * the SAME (they echo our deviceId as targetDeviceId when responding to our
+   * discovery broadcasts) but KEEP the connection open for TLS — so we must
+   * upgrade the TLS bridge immediately in all cases, and only at close-time
+   * decide whether a fast-close was a poke (then reverse-connect quietly).
+   */
+  private pokeMarkTime: number = 0;
+  private pokePeer: KdeDevice | null = null;
+  private static readonly POKE_DETECT_WINDOW_MS: number = 1200;
   /** Last battery info received from the current peer (desktop). */
   private peerBattery: PeerBatteryInfo | null = null;
   /** Periodic local battery report while TLS is live. */
@@ -2261,7 +2273,7 @@ export class DeviceSession implements SystemMediaExporter {
    *
    * Matches Android udpPacketReceived → identityPacketReceived(Remotely, clientMode=false).
    */
-  private async connectOutbound(device: KdeDevice, gen: number): Promise<void> {
+  private async connectOutbound(device: KdeDevice, gen: number, fromPoke: boolean = false): Promise<void> {
     if (gen !== this.sessionGen) {
       return;
     }
@@ -2274,10 +2286,12 @@ export class DeviceSession implements SystemMediaExporter {
     this.handlingIncoming = true;
     this.peerDevice = device;
 
-    this.emit('connecting', `正在主动连接 ${device.deviceName}…`, {
-      peerName: device.deviceName,
-      peerDeviceId: device.deviceId
-    });
+    this.emit('connecting', fromPoke
+      ? `收到 ${device.deviceName} 的连接请求，正在回连…`
+      : `正在主动连接 ${device.deviceName}…`, {
+        peerName: device.deviceName,
+        peerDeviceId: device.deviceId
+      });
 
     let bridgePort: number = 0;
     let tlsServerPort: number = 0;
@@ -2474,7 +2488,7 @@ export class DeviceSession implements SystemMediaExporter {
 
     } catch (e) {
       console.error('[KDE-MVP] Outbound connection failed:', JSON.stringify(e));
-      if (gen === this.sessionGen) {
+      if (gen === this.sessionGen && !this.sessionLive && !fromPoke) {
         this.handlingIncoming = false;
         this.emit('error', `无法连接 ${device.deviceName}`);
       }
@@ -2633,6 +2647,19 @@ export class DeviceSession implements SystemMediaExporter {
           peerDeviceId: this.peerDevice.deviceId
         });
 
+        // Peers echo our deviceId as targetDeviceId both for pokes (phone→phone:
+        // TCP + identity + immediate close) and for normal reverse connections
+        // (Android/desktop respond to our discovery broadcasts and keep the socket
+        // open for TLS). Always upgrade the TLS bridge IMMEDIATELY — no deferral.
+        // At close-time we decide whether a fast-close was actually a poke.
+        if (body.targetDeviceId !== undefined && body.targetDeviceId === MY_DEVICE_ID) {
+          this.pokeMarkTime = Date.now();
+          const pokePeerSnapshot: KdeDevice | null = this.peerDevice;
+          if (pokePeerSnapshot !== null) {
+            this.pokePeer = pokePeerSnapshot;
+          }
+        }
+
         this.startReverseTlsBridge(
           client,
           this.peerDevice,
@@ -2647,6 +2674,20 @@ export class DeviceSession implements SystemMediaExporter {
     client.on('close', () => {
       console.info('[KDE-MVP] Remote TCP closed');
       if (gen === this.sessionGen) {
+        const isPoke: boolean = !this.sessionLive &&
+          this.pokeMarkTime > 0 &&
+          (Date.now() - this.pokeMarkTime) < DeviceSession.POKE_DETECT_WINDOW_MS;
+        if (isPoke) {
+          // Poke: peer opened TCP, sent identity, closed immediately → reverse-connect
+          // back (Android/desktop style) without the misleading disconnect error.
+          this.pokeMarkTime = 0;
+          const pokePeer: KdeDevice | null = this.pokePeer;
+          if (pokePeer !== null && pokePeer.ip.length > 0) {
+            console.info(`[KDE-MVP] Poke from ${pokePeer.deviceName}, reverse-connecting back…`);
+            this.connectOutbound(pokePeer, gen, true);
+          }
+          return;
+        }
         this.sessionLive = false;
         this.handlingIncoming = false;
         this.peerBattery = null;
@@ -2822,6 +2863,10 @@ export class DeviceSession implements SystemMediaExporter {
         // Live session write/read failure (e.g. 2303506 after concurrent send)
         if (this.sessionLive || this.paired) {
           this.onTlsSendFailed(err as Object);
+        } else if (this.pokeMarkTime > 0 &&
+            (Date.now() - this.pokeMarkTime) < DeviceSession.POKE_DETECT_WINDOW_MS) {
+          // Dead poke socket — silent; the close handler already reverse-connects.
+          this.pokeMarkTime = 0;
         } else {
           this.emit('error', '加密协商失败，请重试连接');
         }
@@ -4784,6 +4829,8 @@ export class DeviceSession implements SystemMediaExporter {
     // Keep this.paired / trustedDeviceIds so list still shows as paired-offline
     this.sessionLive = false;
     this.handlingIncoming = false;
+    this.pokeMarkTime = 0;
+    this.pokePeer = null;
     this.clearPairTimer();
     this.pairRequestSentForGen = -1;
     this.pairRequestedByPeer = false;

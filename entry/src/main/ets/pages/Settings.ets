@@ -348,30 +348,26 @@ struct Settings {
           Text(entry.title)
             .fontSize(16)
             .fontWeight(FontWeight.Medium)
-            .fontColor(UiTheme.onSurface)
-            .opacity(entry.disabled ? 0.4 : 1)
+            .fontColor(entry.disabled ? UiTheme.textMuted : UiTheme.onSurface)
             .width('100%')
 
           if (entry.kind === 'name') {
             Text(this.myName.length > 0 ? this.myName : '—')
               .fontSize(13)
-              .fontColor(UiTheme.onSurfaceVariant)
-              .opacity(entry.disabled ? 0.4 : 1)
+              .fontColor(entry.disabled ? UiTheme.textMuted : UiTheme.onSurfaceVariant)
               .margin({ top: 4 })
               .width('100%')
           } else if (entry.kind === 'theme') {
             Text(this.themeLabel)
               .fontSize(13)
-              .fontColor(UiTheme.onSurfaceVariant)
-              .opacity(entry.disabled ? 0.4 : 1)
+              .fontColor(entry.disabled ? UiTheme.textMuted : UiTheme.onSurfaceVariant)
               .margin({ top: 4 })
               .width('100%')
           } else if (typeof entry.summary === 'string' && entry.summary.length > 0 ||
               typeof entry.summary === 'object') {
             Text(entry.summary)
               .fontSize(13)
-              .fontColor(UiTheme.onSurfaceVariant)
-              .opacity(entry.disabled ? 0.4 : 1)
+              .fontColor(entry.disabled ? UiTheme.textMuted : UiTheme.onSurfaceVariant)
               .margin({ top: 4 })
               .width('100%')
           }

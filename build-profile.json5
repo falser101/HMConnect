@@ -13,12 +13,38 @@
           "profile": "/Users/falser/Downloads/HMConnectDebug.p7b",
           "certpath": "/Users/falser/DevEcoStudioProjects/HMConnect/docs/HMConnect.cer"
         }
+      },
+      {
+        "name": "release",
+        "type": "HarmonyOS",
+        "material": {
+          "storeFile": "/Users/falser/DevEcoStudioProjects/HMConnect/docs/HMConnect-release.p12",
+          "storePassword": "000000183485DDF6129A526E2AE880C5014AAF98C7A4E86BD9EC32AD45A0ECB7EC90AEC9ED730573",
+          "keyAlias": "HMConnect-release",
+          "keyPassword": "00000018E94BC93C52DEE49F4ACA694E137A1E92C510A5097E549A97DCCDA3C78924EE844AADE7E1",
+          "signAlg": "SHA256withECDSA",
+          "profile": "/Users/falser/Downloads/HMConnect-releaseRelease.p7b",
+          "certpath": "/Users/falser/Downloads/HMConnect-release.cer"
+        }
       }
     ],
     "products": [
       {
         "name": "default",
         "signingConfig": "default",
+        "targetSdkVersion": "6.1.0(23)",
+        "compatibleSdkVersion": "6.1.0(23)",
+        "runtimeOS": "HarmonyOS",
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          }
+        }
+      },
+      {
+        "name": "release",
+        "signingConfig": "release",
         "targetSdkVersion": "6.1.0(23)",
         "compatibleSdkVersion": "6.1.0(23)",
         "runtimeOS": "HarmonyOS",
@@ -47,7 +73,8 @@
         {
           "name": "default",
           "applyToProducts": [
-            "default"
+            "default",
+            "release"
           ]
         }
       ]
